@@ -23,6 +23,20 @@
     <script src="https://cdn.jsdelivr.net/npm/leaflet-easybutton@2/src/easy-button.js"></script>
     <script src='//unpkg.com/leaflet-arc/bin/leaflet-arc.min.js'></script>
     <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
+    <!-- Carlos -->
+    <style>
+        .chat-bubble {
+            background-color: #f1f1f1;
+            border-radius: 15px;
+            padding: 10px;
+            margin: 10px 0;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        .chat-bubble .material-icons {
+            margin-left: 10px;
+        }
+    </style>
+    <!-- END Carlos -->
 </head>
 <body class="h-full">
     <div id="container" class="flex flex-col h-screen">
@@ -68,26 +82,24 @@
         </div>
         <div class="flex-1 h-full relative">
             <div id="map" class="h-full"></div>
-            <div id="airportInfo" v-if="selectedAirport" class="absolute top-0 right-0 bg-white shadow-lg overflow-y-auto flex-1 h-full">
+            <div id="airportInfo" class="absolute top-0 right-0 bg-white shadow-lg overflow-y-auto flex-1 h-full">
                 <div class="flex justify-between items-center bg-orange-400 p-4">
-                    <h2 class="text-lg font-bold">{{ selectedAirport.name }} ({{ selectedAirport.icao }})</h2>
+                    <h2 class="text-lg font-bold">Agent Events</h2>
                     <span class="material-icons cursor-pointer" v-on:click="selectedAirport = null">close</span>
                 </div>
-                <div class="p-4">
-                    <h3 class="font-semibold" v-if="selectedAirport.radio.length > 0">Frequencies</h3>
-                    <ul class="pl-3 font-sm">
-                        <li v-for="(freq, index) in selectedAirport.radio" v-bind:key="index">{{ freq.description }} - {{ freq.frequency }}</li>
-                    </ul>
-                    <h3 class="font-semibold" v-if="selectedAirport.rwy.length > 0">Runways</h3>
-                    <ul class="pl-3 font-sm">
-                        <li v-for="(runway, index) in selectedAirport.rwy">
-                            <p>{{ runway.name }}</p>
-                            <p class="pl-4">Length: {{ Math.round(runway.length.text) }}{{ runway.length.unit }}</p>
-                            <p class="pl-4">Surface: {{ runway.sfc }}</p>
-                        </li>
-                    </ul>
-                    <a v-if="selectedAirport.icao !== null" v-bind:href="'https://skyvector.com/airport/' + selectedAirport.icao" class="underline text-sm" target="_blank">https://skyvector.com/airport/{{ selectedAirport.icao }}</a>
-                </div>
+
+                <!-- # Carlos -->
+                <ul>
+                    <li v-for="event in agentevents">
+                        <div class="p-4 chat-bubble">
+                            <div class="flex justify-between items-center">
+                                <h3 :class="['text-lg', 'font-bold', getAgentClass(event.agent)]">{{ event.agent }}:</h3> {{ event.message }}
+                            </div>
+                        </div>
+                    </li>
+                </ul>
+
+
             </div>
         </div>
         <div class="leaflet-touch leaflet-top leaflet-left custom-control absolute left-0">

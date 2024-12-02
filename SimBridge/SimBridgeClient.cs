@@ -155,7 +155,7 @@ public class SimBridgeClient
 
     }
 
-    public async Task ChangeAirport(ClientWebSocket ws)
+    public async Task ChangeAirport()
     {
         while (true)
         {
@@ -202,7 +202,7 @@ public class SimBridgeClient
                     }
                     if (!found)
                     {
-                        Press(ws, "UP");
+                        await Press(ws, "UP");
                         await Task.Delay(1000);
                     }
                 }

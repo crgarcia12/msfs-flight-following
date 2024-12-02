@@ -140,6 +140,7 @@ const app = new Vue({
             value: null,
             eteTimeHelper: null
         },
+        agentevents: [],
         alerts: []
     },
     watch: {
@@ -157,6 +158,10 @@ const app = new Vue({
         wsConnection.on("ReceiveData", (data) => {
             this.simConnected = data.isConnected;
             this.acInfo = data.data;
+        });
+
+        wsConnection.on("ReceiveAgentEvent", (data) => {
+            this.agentevents.push(data);
         });
 
         this.db = new Dexie("airports_database");
@@ -192,6 +197,20 @@ const app = new Vue({
         }, 10000);
     },
     methods: {
+        getAgentClass(agent) {
+            switch (agent) {
+                case 'pilot':
+                    return 'text-blue-500';
+                case 'copilot':
+                    return 'text-green-500';
+                case 'operator':
+                    return 'text-red-500';
+                case 'comms':
+                    return 'text-yellow-500';
+                default:
+                    return 'text-black';
+            }
+        },
         convertSecondsToHMS(value) {
             if (value == null || isNaN(value) || value < 0)
                 return;

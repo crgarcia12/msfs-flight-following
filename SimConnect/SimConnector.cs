@@ -11,9 +11,17 @@ using Microsoft.AspNetCore.Hosting;
 using FSUIPCWinformsAutoCS;
 using System.Text.RegularExpressions;
 using static MSFSFlightFollowing.Models.SimConnector;
+using System.Diagnostics.Eventing.Reader;
 
 namespace MSFSFlightFollowing.Models
 {
+    public class AgentEvent
+    {
+        public string agent { get; set; }
+        public string message { get; set; }
+    }
+
+
     public class ClientData
     {
         public bool IsConnected { get; set; }
@@ -22,6 +30,8 @@ namespace MSFSFlightFollowing.Models
 
     public class SimConnector
     {
+        private static int eventssent = 0;
+
         public AircraftStatusModel AircraftStatus { get; private set; }
         public bool IsConnected => simconnect != null;
 
@@ -133,9 +143,43 @@ namespace MSFSFlightFollowing.Models
             Disconnect();
         }
 
+        private async Task SendAgentEventsToFrontEnd()
+        {
+            
+            if (eventssent++%3 != 0) return;
+
+            await Task.Delay(5000);
+            var agentEvent = new AgentEvent()
+            {
+                agent = "comms",
+                message = "Innsbruck airport is closed due to weather"
+            };
+            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            agentEvent.agent = "operator";
+            agentEvent.message = "Searching for closest alternative in database";
+            await Task.Delay(2000);
+            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            agentEvent.agent = "operator";
+            agentEvent.message = "Propose deviation to Zurich";
+            await Task.Delay(1000);
+            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            agentEvent.agent = "navigator";
+            agentEvent.message = "Route to Zurich: ASOBO UW15 ZL75 ZRH";
+            await Task.Delay(1000);
+            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            agentEvent.agent = "navigator";
+            agentEvent.message = "Active runaway: 28";
+            await Task.Delay(500);
+            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            agentEvent.agent = "pilot";
+            agentEvent.message = "Deviating to ZRH RWY 28";
+            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+        }
+
 
         private void RecvSimobjectDataBytype(SimConnect sender, SIMCONNECT_RECV_SIMOBJECT_DATA_BYTYPE data)
         {
+            
             switch (data.dwRequestID)
             {
                 case (uint)DATA_REQUEST.AircraftStatus:
@@ -145,8 +189,12 @@ namespace MSFSFlightFollowing.Models
                         IsConnected = true,
                         Data = AircraftStatus
                     };
-
                     _wsConnector.Clients.All.SendAsync("ReceiveData", clientData);
+
+
+                    Task.Run(() => SendAgentEventsToFrontEnd());
+
+
                     Task.Run(() => _eventHub.SendEventAsync(clientData));
                     
                     break;

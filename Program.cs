@@ -35,8 +35,9 @@ namespace MSFSFlightFollowing
 
                 Task.Run(async () => {
                     await Task.Delay(3000);
-                    await sbc.Connect();
-                    await sbc.ChangeAirport(sbc.ws);
+                    // Carlos: Here we can deviate the plane!
+                    //await sbc.Connect();
+                    //await sbc.ChangeAirport();
                 });
 
 
