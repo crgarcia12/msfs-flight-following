@@ -32,7 +32,12 @@ namespace MSFSFlightFollowing
 
 
                 SimBridgeClient sbc = new SimBridgeClient();
-                await sbc.Connect();
+
+                Task.Run(async () => {
+                    await Task.Delay(3000);
+                    await sbc.Connect();
+                    await sbc.ChangeAirport(sbc.ws);
+                });
 
 
                 host.WaitForShutdown();
