@@ -22,6 +22,9 @@ namespace MSFSFlightFollowing.Controllers
          return View();
       }
 
+
+
+
       [HttpGet("get/airports/")]
       public JsonResult Airports()
       {
@@ -49,5 +52,13 @@ namespace MSFSFlightFollowing.Controllers
 
          return Json(new { data = result });
       }
-   }
+
+        [HttpGet("get/changedirection/")]
+        public string ChangeDirection()
+        {
+            return "hoila";
+
+
+        }
+    }
 }
