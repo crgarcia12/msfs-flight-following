@@ -33,14 +33,6 @@ namespace MSFSFlightFollowing
 
                 SimBridgeClient sbc = new SimBridgeClient();
 
-                Task.Run(async () => {
-                    await Task.Delay(3000);
-                    // Carlos: Here we can deviate the plane!
-                    //await sbc.Connect();
-                    //await sbc.ChangeAirport();
-                });
-
-
                 host.WaitForShutdown();
             }
             catch (Exception ex)

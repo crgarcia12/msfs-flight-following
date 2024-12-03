@@ -157,10 +157,10 @@ public class SimBridgeClient
 
     public async Task ChangeAirport()
     {
-        while (true)
-        {
-            try
-            {
+        //while (true)
+        //{
+            //try
+            //{
                 while (!string.IsNullOrEmpty(fmcRootDataObject.Left.Scratchpad))
                 {
                     await Press(ws, "CLR");
@@ -210,15 +210,15 @@ public class SimBridgeClient
                 // "scratchpad": "{white}T/D REACHED{end}",
 
                 // Close the WebSocket connection
-                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-                Console.WriteLine("Connection closed.");
+            //    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+            //    Console.WriteLine("Connection closed.");
 
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine(ex.ToString());
-            }
-        }
+            //}
+            //catch (Exception ex)
+            //{
+            //    Console.WriteLine(ex.ToString());
+            //}
+        //}
     }
 
     public async Task Connect()

@@ -6,10 +6,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Azure.Identity;
-using Azure.Messaging.EventHubs;
-using Azure.Messaging.EventHubs.Producer;
-using System.Text;
 using MSFSFlightFollowing.Models;
 using System.Text.Json;
 

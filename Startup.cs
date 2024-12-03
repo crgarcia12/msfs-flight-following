@@ -6,53 +6,56 @@ using MSFSFlightFollowing.Models;
 
 namespace MSFSFlightFollowing
 {
-   public class Startup
-   {
-      private IWebHostEnvironment Env { get; set; }
+    public class Startup
+    {
+        private IWebHostEnvironment Env { get; set; }
 
-      public Startup(IWebHostEnvironment env)
-      {
-         Env = env;
-      }
+        public Startup(IWebHostEnvironment env)
+        {
+            Env = env;
+        }
 
-      // This method gets called by the runtime. Use this method to add services to the container.
-      // For more information on how to configure your application, visit https://go.microsoft.com/fwlink/?LinkID=398940
-      public void ConfigureServices(IServiceCollection services)
-      {
-         services.Configure<ConsoleLifetimeOptions>(options => options.SuppressStatusMessages = true);
-         IMvcBuilder builder = services.AddControllersWithViews();
+        // This method gets called by the runtime. Use this method to add services to the container.
+        // For more information on how to configure your application, visit https://go.microsoft.com/fwlink/?LinkID=398940
+        public void ConfigureServices(IServiceCollection services)
+        {
+            services.Configure<ConsoleLifetimeOptions>(options => options.SuppressStatusMessages = true);
+            IMvcBuilder builder = services.AddControllersWithViews();
 
 #if DEBUG
             builder.AddRazorRuntimeCompilation();
 #endif
 
-         services.AddSignalR();
-         services.AddSingleton<SimConnector>();
-      }
+            services.AddSignalR();
+            services.AddSingleton<SimBridgeClient>();
+            services.AddSingleton<AgentManager>();
+            services.AddSingleton<SimConnector>();
 
-      // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
-      public void Configure(IApplicationBuilder app, IWebHostEnvironment env, SimConnector simconnector, IHostApplicationLifetime lifetime)
-      {
-         if (env.IsDevelopment())
-         {
-            app.UseDeveloperExceptionPage();
-         }
+        }
 
-         simconnector.Connect();
+        // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
+        public void Configure(IApplicationBuilder app, IWebHostEnvironment env, SimConnector simconnector, IHostApplicationLifetime lifetime)
+        {
+            if (env.IsDevelopment())
+            {
+                app.UseDeveloperExceptionPage();
+            }
 
-         app.UseStaticFiles();
-         app.UseRouting();
+            simconnector.Connect();
 
-         lifetime.ApplicationStopping.Register(() =>
-         {
-            MessageWindow.GetWindow().Dispose();
-         });
+            app.UseStaticFiles();
+            app.UseRouting();
 
-         app.UseEndpoints(endpoints =>
-         {
-            endpoints.MapDefaultControllerRoute();
-            endpoints.MapHub<WebSocketConnector>("/ws");
-         });
-      }
-   }
+            lifetime.ApplicationStopping.Register(() =>
+            {
+                MessageWindow.GetWindow().Dispose();
+            });
+
+            app.UseEndpoints(endpoints =>
+            {
+                endpoints.MapDefaultControllerRoute();
+                endpoints.MapHub<WebSocketConnector>("/ws");
+            });
+        }
+    }
 }

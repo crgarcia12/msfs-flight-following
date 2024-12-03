@@ -199,29 +199,29 @@ const app = new Vue({
     methods: {
         getAgentClass(agent) {
             switch (agent) {
-                case 'pilot':
+                case 'Pilot':
                     return 'text-blue-500';
-                case 'copilot':
+                case 'Copilot':
                     return 'text-green-500';
-                case 'operator':
+                case 'Operator':
                     return 'text-red-500';
-                case 'navigator':
+                case 'Navigator':
                     return 'text-indigo-500';
-                case 'comms':
+                case 'Comms':
                     return 'text-yellow-500';
             }
         },
         getAgentIcon(agent) {
             switch(agent) {
-                case 'pilot':
+                case 'Pilot':
                     return 'rocket';
-                case 'copilot':
+                case 'Copilot':
                     return 'person_check';
-                case 'operator':
+                case 'Operator':
                     return 'flutter_dash';
-                case 'navigator':
+                case 'Navigator':
                     return 'menu_book';
-                case 'comms':
+                case 'Comms':
                     return 'support_agent';
             }
         },

@@ -15,7 +15,7 @@ using System.Diagnostics.Eventing.Reader;
 
 namespace MSFSFlightFollowing.Models
 {
-    public class AgentEvent
+    public class AgentFrontEndEvent
     {
         public string agent { get; set; }
         public string message { get; set; }
@@ -43,16 +43,18 @@ namespace MSFSFlightFollowing.Models
         private IHostApplicationLifetime _lifetime;
         private IWebHostEnvironment _env;
         private EventHub _eventHub;
+        private AgentManager _agentManager;
 
         const uint WM_USER_SIMCONNECT = 0x0402;
 
-        public SimConnector(IHubContext<WebSocketConnector> wsConnector, ILogger<SimConnector> logger, IHostApplicationLifetime lifetime, IWebHostEnvironment env)
+        public SimConnector(IHubContext<WebSocketConnector> wsConnector, AgentManager agentManager, ILogger<SimConnector> logger, IHostApplicationLifetime lifetime, IWebHostEnvironment env)
         {
             _eventHub = new EventHub();
             _logger = logger;
             _wsConnector = wsConnector;
             _lifetime = lifetime;
             _env = env;
+            _agentManager = agentManager;
 
             _lifetime.ApplicationStopping.Register(Disconnect);
 
@@ -146,34 +148,34 @@ namespace MSFSFlightFollowing.Models
         private async Task SendAgentEventsToFrontEnd()
         {
             
-            if (eventssent++%3 != 0) return;
+            //if (eventssent++%3 != 0) return;
 
-            await Task.Delay(5000);
-            var agentEvent = new AgentEvent()
-            {
-                agent = "comms",
-                message = "Innsbruck airport is closed due to weather"
-            };
-            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            agentEvent.agent = "operator";
-            agentEvent.message = "Searching for closest alternative in database";
-            await Task.Delay(2000);
-            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            agentEvent.agent = "operator";
-            agentEvent.message = "Propose deviation to Zurich";
-            await Task.Delay(1000);
-            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            agentEvent.agent = "navigator";
-            agentEvent.message = "Route to Zurich: ASOBO UW15 ZL75 ZRH";
-            await Task.Delay(1000);
-            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            agentEvent.agent = "navigator";
-            agentEvent.message = "Active runaway: 28";
-            await Task.Delay(500);
-            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            agentEvent.agent = "pilot";
-            agentEvent.message = "Deviating to ZRH RWY 28";
-            await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            //await Task.Delay(5000);
+            //var agentEvent = new AgentFrontEndEvent()
+            //{
+            //    agent = "comms",
+            //    message = "Innsbruck airport is closed due to weather"
+            //};
+            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            //agentEvent.agent = "operator";
+            //agentEvent.message = "Searching for closest alternative in database";
+            //await Task.Delay(2000);
+            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            //agentEvent.agent = "operator";
+            //agentEvent.message = "Propose deviation to Zurich";
+            //await Task.Delay(1000);
+            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            //agentEvent.agent = "navigator";
+            //agentEvent.message = "Route to Zurich: ASOBO UW15 ZL75 ZRH";
+            //await Task.Delay(1000);
+            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            //agentEvent.agent = "navigator";
+            //agentEvent.message = "Active runaway: 28";
+            //await Task.Delay(500);
+            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
+            //agentEvent.agent = "pilot";
+            //agentEvent.message = "Deviating to ZRH RWY 28";
+            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
         }
 
 
@@ -194,6 +196,13 @@ namespace MSFSFlightFollowing.Models
 
                     Task.Run(() => SendAgentEventsToFrontEnd());
 
+                    Task.Run(async () => {
+                        await this._agentManager.SendEventAsync(new AgentEvent(this)
+                        {
+                            Data = clientData,
+                            EventType = EventType.AircraftDataUpdated
+                        });
+                    });
 
                     Task.Run(() => _eventHub.SendEventAsync(clientData));
                     
