@@ -205,10 +205,24 @@ const app = new Vue({
                     return 'text-green-500';
                 case 'operator':
                     return 'text-red-500';
+                case 'navigator':
+                    return 'text-indigo-500';
                 case 'comms':
                     return 'text-yellow-500';
-                default:
-                    return 'text-black';
+            }
+        },
+        getAgentIcon(agent) {
+            switch(agent) {
+                case 'pilot':
+                    return 'rocket';
+                case 'copilot':
+                    return 'person_check';
+                case 'operator':
+                    return 'flutter_dash';
+                case 'navigator':
+                    return 'menu_book';
+                case 'comms':
+                    return 'support_agent';
             }
         },
         convertSecondsToHMS(value) {
