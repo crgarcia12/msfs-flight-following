@@ -5,6 +5,10 @@ namespace MSFSFlightFollowing;
 
 public class Pilot : AgentBase
 {
+    bool crossed3kasc = false;
+    bool crossed3desc = false;
+
+
     public Pilot(AgentManager agentManager) : base(agentManager, nameof(Pilot))
     {
     }

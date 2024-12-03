@@ -12,6 +12,7 @@ using FSUIPCWinformsAutoCS;
 using System.Text.RegularExpressions;
 using static MSFSFlightFollowing.Models.SimConnector;
 using System.Diagnostics.Eventing.Reader;
+using System.Reflection;
 
 namespace MSFSFlightFollowing.Models
 {
@@ -55,6 +56,7 @@ namespace MSFSFlightFollowing.Models
             _lifetime = lifetime;
             _env = env;
             _agentManager = agentManager;
+            _agentManager.RegisterSimConnectorInstance(this);
 
             _lifetime.ApplicationStopping.Register(Disconnect);
 
@@ -123,9 +125,6 @@ namespace MSFSFlightFollowing.Models
                     if (WebSocketConnector.userCount > 0)
                     {
                         simconnect?.RequestDataOnSimObjectType(DATA_REQUEST.AircraftStatus, DEFINITIONS.AircraftStatus, 0, SIMCONNECT_SIMOBJECT_TYPE.USER);
-
-                        //carlos
-                        SetHeading(123);
                     }
                 }
             });
@@ -293,7 +292,14 @@ namespace MSFSFlightFollowing.Models
             PAUSE,
             GEARUP,
             GEARDOWN,
-            HEADING
+            HEADING,
+            ALTDEC,
+            ALTPUSH,
+            ALTPULL,
+            APRPUSH,
+            AP0PUSH,
+            AP1PUSH,
+            AP2PUSH
         };
 
         public enum hSimconnect : int
@@ -304,12 +310,25 @@ namespace MSFSFlightFollowing.Models
         {
             simconnect.MapClientEventToSimEvent(EVENTS.GEARDOWN, "TOGGLE_BEACON_LIGHTS");
             simconnect.MapClientEventToSimEvent(EVENTS.HEADING, "A32NX.FCU_HDG_SET");
+            simconnect.MapClientEventToSimEvent(EVENTS.ALTDEC, "A32NX.FCU_ALT_SET");
+            simconnect.MapClientEventToSimEvent(EVENTS.ALTPUSH, "A32NX.FCU_ALT_PUSH");
+            simconnect.MapClientEventToSimEvent(EVENTS.ALTPULL, "A32NX.FCU_ALT_PULL");
+            simconnect.MapClientEventToSimEvent(EVENTS.APRPUSH, "A32NX.FCU_APPR_PUSH");
+            simconnect.MapClientEventToSimEvent(EVENTS.AP1PUSH, "A32NX.FCU_AP_1_PUSH;");
+            simconnect.MapClientEventToSimEvent(EVENTS.AP2PUSH, "A32NX.FCU_AP_2_PUSH;");
         }
 
-        private void SetHeading(int heading)
+        public void StartApproach()
         {
-            //simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.GEARDOWN, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
-            //simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.HEADING, (uint)170, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
+            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.APRPUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
+            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.AP1PUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
+            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.AP2PUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
+        }
+
+        public void StartDecent()
+        {
+            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.ALTDEC, (uint)4000, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
+            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.ALTPUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
         }
         #endregion
 

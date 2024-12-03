@@ -162,6 +162,8 @@ const app = new Vue({
 
         wsConnection.on("ReceiveAgentEvent", (data) => {
             this.agentevents.push(data);
+            var container = this.$el.querySelector("#airportInfo");
+            container.scrollTop = container.scrollHeight;
         });
 
         this.db = new Dexie("airports_database");
@@ -400,6 +402,14 @@ const app = new Vue({
                 const permission = await Notification.requestPermission();
                 if (permission === "granted")
                     return true;
+            }
+        },
+        scrollToElement() {
+            const el = this.$refs.scrollToMe;
+        
+            if (el) {
+              // Use el.scrollIntoView() to instantly scroll to the element
+              el.scrollIntoView({behavior: 'smooth'});
             }
         }
     },

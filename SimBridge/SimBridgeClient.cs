@@ -17,13 +17,15 @@ public class SimBridgeClient
     FmcRoot _root = null;
     FmcRoot fmcRootDataObject
     {
-        get { 
+        get
+        {
             lock (fmcRootLock)
             {
                 return _root;
             }
         }
-        set {
+        set
+        {
             lock (fmcRootLock)
             {
                 _root = value;
@@ -133,8 +135,8 @@ public class SimBridgeClient
         string message = $"event:left:{button}";
         ArraySegment<byte> bytesToSend = new ArraySegment<byte>(Encoding.UTF8.GetBytes(message));
         await ws.SendAsync(bytesToSend, WebSocketMessageType.Text, true, CancellationToken.None);
-        
-        while(currentVersion == fmcVersion)
+
+        while (currentVersion == fmcVersion)
         {
             await Task.Delay(500);
         }
@@ -159,65 +161,69 @@ public class SimBridgeClient
     {
         //while (true)
         //{
-            //try
-            //{
-                while (!string.IsNullOrEmpty(fmcRootDataObject.Left.Scratchpad))
+        //try
+        //{
+        while (!string.IsNullOrEmpty(fmcRootDataObject.Left.Scratchpad))
+        {
+            await Press(ws, "CLR");
+            await Task.Delay(1000);
+        }
+
+        // Changin INIT page to new destination
+        await Press(ws, "INIT");
+        await Type(ws, "LSME/LSZH");
+        await Task.Delay(500);
+        await Press(ws, "R1");
+        await Task.Delay(1000);
+        await Press(ws, "L6");
+        await Task.Delay(500);
+
+        // Configure Flight plan
+        await Press(ws, "FPLN");
+        await Task.Delay(1000);
+        await Press(ws, "L6"); //LSZH
+        await Press(ws, "R1"); //Arrival
+        await Press(ws, "L5"); //ILS28
+        await Press(ws, "L5"); //ILS28
+        await Press(ws, "R6"); //INSERT
+
+        // Direct
+        await Press(ws, "DIR");
+
+        bool found = false;
+        while (!found)
+        {
+            int index = 0;
+            foreach (List<string> line in fmcRootDataObject.Left.Lines)
+            {
+                // There are 3 columns in every row. I am interested in the first one (0)
+                if (!found && line[0].Contains("CF28"))
                 {
-                    await Press(ws, "CLR");
-                    await Task.Delay(1000);
+                    found = true;
+                    int buttonIndex = (index + 1) / 2;
+                    await Press(ws, $"L{buttonIndex.ToString()}");
+                    await Press(ws, $"R6"); //*Direct
                 }
+                index++;
+            }
+            if (!found)
+            {
+                await Press(ws, "UP");
+                await Task.Delay(1000);
+            }
+        }
 
-                // Changin INIT page to new destination
-                await Press(ws, "INIT");
-                await Type(ws, "LSGG/LSZH");
-                await Press(ws, "R1");
-                await Press(ws, "L6");
+        // "scratchpad": "{white}T/D REACHED{end}",
 
-                // Configure Flight plan
-                await Press(ws, "FPLN");
-                await Press(ws, "L6"); //LSZH
-                await Press(ws, "R1"); //Arrival
-                await Press(ws, "L5"); //ILS28
-                await Press(ws, "L5"); //ILS28
-                await Press(ws, "R6"); //INSERT
+        // Close the WebSocket connection
+        //    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+        //    Console.WriteLine("Connection closed.");
 
-                // Direct
-                await Press(ws, "DIR");
-
-                bool found = false;
-                while (!found)
-                {
-                    int index = 0;
-                    foreach (List<string> line in fmcRootDataObject.Left.Lines)
-                    {
-                        // There are 3 columns in every row. I am interested in the first one (0)
-                        if (line[0].Contains("CF28"))
-                        {
-                            found = true;
-                            int buttonIndex = (index + 1) / 2;
-                            await Press(ws, $"L{buttonIndex.ToString()}");
-                            await Press(ws, $"R6"); //*Direct
-                        }
-                        index++;
-                    }
-                    if (!found)
-                    {
-                        await Press(ws, "UP");
-                        await Task.Delay(1000);
-                    }
-                }
-
-                // "scratchpad": "{white}T/D REACHED{end}",
-
-                // Close the WebSocket connection
-            //    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-            //    Console.WriteLine("Connection closed.");
-
-            //}
-            //catch (Exception ex)
-            //{
-            //    Console.WriteLine(ex.ToString());
-            //}
+        //}
+        //catch (Exception ex)
+        //{
+        //    Console.WriteLine(ex.ToString());
+        //}
         //}
     }
 

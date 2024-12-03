@@ -17,6 +17,14 @@ public class Navigator : AgentBase
 
     public override async Task ProcessEvent(AgentEvent agentEvent)
     {
+        if(agentEvent.EventType == EventType.NewDestination)
+        {
+            await _agentManager.SendEventAsync(new AgentEvent(this)
+            {
+                EventType = EventType.LandingRunaway,
+                FrontEndMessage = $"New Destination: ZURICH - Recommend Runaway 28",
+            });
+        }
         if (agentEvent.EventType == EventType.AircraftDataUpdated)
         {
             var clientData = (ClientData)agentEvent.Data;
@@ -32,27 +40,27 @@ public class Navigator : AgentBase
                 });
             }
 
-            if (watchFuel.ElapsedMilliseconds > 10000)
-            {
-                watchFuel = Stopwatch.StartNew();
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.CopilotCommand,
-                    FrontEndMessage = $"Check Remaining Fuel",
-                    CopilotCommand = $"Remaining Fuel {Math.Floor(clientData.Data.CurrentFuel)}"
-                });
+            //if (watchFuel.ElapsedMilliseconds > 30000)
+            //{
+            //    watchFuel = Stopwatch.StartNew();
+            //    await _agentManager.SendEventAsync(new AgentEvent(this)
+            //    {
+            //        EventType = EventType.CopilotCommand,
+            //        FrontEndMessage = $"Check Remaining Fuel",
+            //        CopilotCommand = $"Remaining Fuel {Math.Floor(clientData.Data.CurrentFuel)}"
+            //    });
                 
-            }
-            if (watchAP.ElapsedMilliseconds > 15000)
-            {
-                watchAP = Stopwatch.StartNew();
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.CopilotCommand,
-                    FrontEndMessage = $"Check Autopilot",
-                    CopilotCommand = $"Autopilot Mode NAV: {clientData.Data.Autopilot.Nav1}"
-                });
-            }
+            //}
+            //if (watchAP.ElapsedMilliseconds > 45000)
+            //{
+            //    watchAP = Stopwatch.StartNew();
+            //    await _agentManager.SendEventAsync(new AgentEvent(this)
+            //    {
+            //        EventType = EventType.CopilotCommand,
+            //        FrontEndMessage = $"Check Autopilot",
+            //        CopilotCommand = $"Autopilot Mode NAV: {clientData.Data.Autopilot.Nav1}"
+            //    });
+            //}
 
         }
     }

@@ -4,7 +4,10 @@ public enum EventType
 {
     NotifyFrontEnd,
     AircraftDataUpdated,
-    CopilotCommand
+    CopilotCommand,
+    AtcComm,
+    NewDestination,
+    LandingRunaway
 }
 
 public class AgentEvent
