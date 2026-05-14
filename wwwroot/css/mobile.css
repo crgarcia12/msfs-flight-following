@@ -1,0 +1,580 @@
+/* ===========================================================
+   MSFS Flight Following — mobile (phone-first) stylesheet
+   Single-column, dark, glassy, touch-targets >= 44px.
+   =========================================================== */
+
+:root {
+    --bg: #0b0f1a;
+    --bg-2: #0f1626;
+    --panel: rgba(255, 255, 255, 0.04);
+    --panel-2: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.1);
+    --fg: #e6edf6;
+    --fg-dim: #8a93a4;
+    --accent: #22d3ee;
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --red: #ef4444;
+    --header-h: 52px;
+    --tabs-h: 64px;
+    --safe-top: env(safe-area-inset-top, 0);
+    --safe-bot: env(safe-area-inset-bottom, 0);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: linear-gradient(180deg, #0b0f1a 0%, #07090f 100%);
+    color: var(--fg);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overflow: hidden;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    /* 100vh is broken on iOS Safari / mobile Chrome — it counts the area behind
+       the URL bar, which then clips the bottom tab bar. 100dvh always reflects
+       the currently visible viewport. Keep 100vh as a fallback for old browsers. */
+    height: 100vh;
+    height: 100dvh;
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bot);
+}
+
+/* Subtle red pulse on the whole app while SRS is active */
+#app.srs-alert {
+    animation: srsPulse 1.6s ease-in-out infinite;
+}
+@keyframes srsPulse {
+    0%, 100% { box-shadow: inset 0 0 0 0 rgba(239, 68, 68, 0); }
+    50%      { box-shadow: inset 0 0 60px 0 rgba(239, 68, 68, 0.35); }
+}
+
+/* ============ TOP STATUS BAR ============ */
+.top {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0 0.9rem;
+    height: var(--header-h);
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+}
+.conn { display: flex; align-items: center; gap: 0.5rem; min-width: 120px; }
+.dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 8px currentColor;
+}
+.dot.green { background: var(--green); color: var(--green); }
+.dot.amber { background: var(--amber); color: var(--amber); }
+.dot.red   { background: var(--red);   color: var(--red); }
+.conn-text {
+    font-size: 0.72rem; letter-spacing: 0.08em; font-weight: 700;
+    color: var(--fg-dim);
+}
+.phase {
+    flex: 1; text-align: center;
+    font-size: 0.95rem; font-weight: 700;
+    letter-spacing: 0.06em; color: var(--accent);
+    text-transform: uppercase;
+}
+.desk-link {
+    color: var(--fg-dim); text-decoration: none;
+    width: 40px; height: 40px; display: grid; place-items: center;
+    border-radius: 8px;
+}
+.desk-link:active { background: var(--panel-2); }
+
+/* ============ FMA BANNER ============ */
+.fma {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 0.9rem;
+    background: rgba(15, 22, 38, 0.7);
+    border-bottom: 1px solid var(--border);
+}
+.fma-cell {
+    flex: 1; text-align: center;
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 6px;
+    padding: 0.25rem 0.4rem;
+}
+.fma-active {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 1rem; color: var(--green); letter-spacing: 0.04em;
+}
+.fma-armed {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.72rem; color: #93c5fd; min-height: 0.9rem;
+}
+.fma.fma-srs .fma-active { color: var(--red); animation: blink 0.7s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0.25; } }
+.recover {
+    background: var(--red); color: white;
+    border: none; border-radius: 6px;
+    padding: 0.55rem 0.7rem;
+    font-weight: 700; letter-spacing: 0.04em; font-size: 0.78rem;
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+}
+.recover .material-icons { font-size: 1rem; }
+.td-pill {
+    display: inline-flex; align-items: center; gap: 0.2rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(251, 191, 36, 0.18);
+    border: 1px solid rgba(251, 191, 36, 0.7);
+    border-radius: 6px;
+    color: var(--amber);
+    font-weight: 700; font-size: 0.7rem; letter-spacing: 0.1em;
+    animation: tdFlash 1.6s ease-in-out infinite;
+}
+.td-pill .material-icons { font-size: 0.95rem; }
+@keyframes tdFlash {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+    50%      { box-shadow: 0 0 10px 1px rgba(251, 191, 36, 0.6); }
+}
+.descend {
+    background: linear-gradient(180deg, #0891b2 0%, #0e7490 100%);
+    color: #ecfeff;
+    border: 1px solid rgba(34, 211, 238, 0.6);
+    border-radius: 6px;
+    padding: 0.5rem 0.65rem;
+    font-weight: 700; letter-spacing: 0.04em; font-size: 0.75rem;
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    cursor: pointer;
+}
+.descend:active { transform: scale(0.97); }
+.descend .material-icons { font-size: 0.95rem; }
+
+/* ============ CONTENT AREA ============ */
+.content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ---------- FLIGHT TAB ---------- */
+.tab-flight { padding: 0.75rem; }
+.tiles {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.55rem;
+}
+.tile {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.7rem 0.85rem;
+    min-height: 88px;
+    position: relative;
+    overflow: hidden;
+}
+.tile.big {
+    grid-column: span 2;
+    min-height: 110px;
+}
+.tile-label {
+    font-size: 0.65rem;
+    color: var(--fg-dim);
+    letter-spacing: 0.18em;
+    font-weight: 700;
+}
+.tile-value {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 2rem;
+    color: var(--accent);
+    line-height: 1.1;
+    margin-top: 0.2rem;
+}
+.tile.big .tile-value { font-size: 3rem; color: #fff; }
+.tile-sub {
+    position: absolute; right: 0.7rem; bottom: 0.55rem;
+    font-size: 0.7rem; color: var(--fg-dim);
+}
+.tile.tile-up .tile-value { color: var(--green); }
+.tile.tile-dn .tile-value { color: var(--amber); }
+
+.row-tiles {
+    display: flex; gap: 0.5rem;
+    margin-top: 0.7rem;
+    flex-wrap: wrap;
+}
+.row-tile {
+    flex: 1; min-width: 130px;
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.45rem 0.8rem;
+    font-size: 0.85rem;
+    color: var(--fg);
+}
+.row-tile .material-icons { font-size: 1rem; color: var(--accent); }
+
+/* ---------- MAP TAB ---------- */
+.tab-map { position: relative; height: 100%; }
+#map { width: 100%; height: 100%; background: #07090f; }
+.map-overlay {
+    position: absolute; top: 0.6rem; left: 0.6rem;
+    background: rgba(0, 0, 0, 0.65);
+    padding: 0.3rem 0.6rem; border-radius: 6px;
+    font-family: 'Share Tech Mono', monospace; font-size: 0.78rem;
+    color: var(--fg);
+    pointer-events: none;
+    z-index: 500;
+}
+
+/* ---------- FCU TAB ---------- */
+.tab-fcu { padding: 0.65rem; padding-bottom: 1rem; }
+.fcu-airframes {
+    text-align: center;
+    color: var(--fg-dim);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+}
+/* READ-ONLY mode: banner at top of FCU tab + disabled buttons */
+.fcu-readonly-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.7rem 0.8rem;
+    margin-bottom: 0.7rem;
+    background: rgba(180, 83, 9, 0.18);
+    border: 1px solid #b45309;
+    border-radius: 10px;
+    color: #fbbf24;
+}
+.fcu-readonly-banner .material-icons { font-size: 1.4rem; }
+.fcu-readonly-banner strong { letter-spacing: 0.12em; font-size: 0.85rem; }
+.fcu-readonly-banner .hint { font-size: 0.7rem; color: #fde68a; line-height: 1.3; margin-top: 0.15rem; }
+.fcu-readonly-banner code { background: rgba(0,0,0,0.3); padding: 0 0.25rem; border-radius: 3px; font-size: 0.68rem; }
+.tab-fcu.fcu-read-only .knob,
+.tab-fcu.fcu-read-only .fcu-buttons { opacity: 0.55; }
+.tab-fcu.fcu-read-only .knob button,
+.tab-fcu.fcu-read-only .fcu-buttons button {
+    pointer-events: none;
+    filter: grayscale(60%);
+    cursor: not-allowed;
+}
+.knob {
+    background: linear-gradient(180deg, #1a2030 0%, #11161f 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.65rem;
+    margin-bottom: 0.55rem;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.05) inset;
+}
+.knob-head {
+    display: flex; align-items: center; gap: 0.65rem;
+    margin-bottom: 0.5rem;
+}
+.knob-label {
+    font-weight: 700; letter-spacing: 0.12em;
+    color: var(--fg-dim); font-size: 0.8rem;
+    width: 44px;
+}
+.knob-value {
+    flex: 1; text-align: right;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 1.7rem;
+    background: #050811;
+    color: #4ade80;
+    border-radius: 6px;
+    padding: 0.15rem 0.6rem;
+    text-shadow: 0 0 8px rgba(74, 222, 128, 0.6);
+}
+.mini {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 0.72rem; padding: 0.25rem 0.55rem; border-radius: 6px;
+}
+.mini.active { color: var(--accent); border-color: var(--accent); }
+
+.stepper, .pp {
+    display: grid;
+    gap: 0.4rem;
+}
+.stepper {
+    grid-template-columns: repeat(4, 1fr);
+    margin-bottom: 0.4rem;
+}
+.pp { grid-template-columns: repeat(2, 1fr); }
+
+.stepper button, .pp button {
+    appearance: none;
+    background: #1f2937;
+    color: var(--fg);
+    border: 1px solid #374151;
+    border-radius: 8px;
+    font-family: inherit;
+    font-weight: 700;
+    font-size: 0.95rem;
+    padding: 0.85rem 0;
+    cursor: pointer;
+    min-height: 48px;
+    transition: transform 0.05s, background 0.1s;
+}
+.stepper button:active, .pp button:active {
+    transform: scale(0.96);
+    background: #0f172a;
+}
+.pp button {
+    background: #0d6efd33;
+    border-color: #0d6efd99;
+    letter-spacing: 0.1em;
+}
+
+.btn-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.45rem;
+    margin-top: 0.6rem;
+}
+.btn-grid button {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: #1f2937;
+    color: var(--fg);
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 0.9rem;
+    letter-spacing: 0.08em;
+    min-height: 52px;
+    cursor: pointer;
+}
+.btn-grid .ap {
+    background: linear-gradient(180deg, #1e293b 0%, #0b1220 100%);
+    color: #93c5fd;
+    border-color: #1e3a8a;
+}
+.btn-grid .ap.wide { color: #67e8f9; }
+.btn-grid .md { color: #cbd5e1; }
+.btn-grid .amber {
+    background: linear-gradient(180deg, #422006 0%, #1c1304 100%);
+    color: var(--amber);
+    border-color: #92400e;
+}
+.btn-grid button:active { transform: scale(0.97); }
+
+/* ============ BOTTOM TAB BAR ============ */
+.tabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    height: var(--tabs-h);
+    flex-shrink: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid var(--border);
+}
+.tabs button {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--fg-dim);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.15rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    cursor: pointer;
+}
+.tabs button .material-icons { font-size: 1.4rem; }
+.tabs button.active {
+    color: var(--accent);
+}
+.tabs button.active::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 50%; transform: translateX(-50%);
+    width: 30px; height: 3px;
+    background: var(--accent);
+    border-radius: 0 0 3px 3px;
+}
+.tabs button { position: relative; }
+
+/* ============ TABLET / LANDSCAPE ============ */
+@media (min-width: 720px) {
+    .tiles { grid-template-columns: repeat(3, 1fr); }
+    .tile.big { grid-column: span 3; }
+    .tab-flight, .tab-fcu { max-width: 700px; margin: 0 auto; }
+}
+
+
+/* ============ MCDU TAB (mobile) ============ */
+.tab-mcdu {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 8px;
+    gap: 8px;
+    overflow: hidden;
+}
+.mcdu-sub {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: #67e8f9;
+    font-size: 0.7rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 0 4px;
+}
+.mcdu-toggle {
+    background: rgba(34, 211, 238, 0.15);
+    border: 1px solid rgba(34, 211, 238, 0.4);
+    color: #67e8f9;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.mcdu-toggle .material-icons { font-size: 16px; }
+
+.tab-mcdu .mcdu-screen {
+    flex: 1;
+    background: #0a0e12;
+    border: 1px solid #1f2937;
+    border-radius: 6px;
+    padding: 10px 6px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 1.05rem;
+    line-height: 1.45;
+    color: #d6e6f5;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.tab-mcdu .mcdu-title-row,
+.tab-mcdu .mcdu-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 4px;
+    min-height: 22px;
+}
+.tab-mcdu .mcdu-title {
+    text-align: center;
+    color: #67e8f9;
+    font-weight: 700;
+}
+.tab-mcdu .mcdu-cell { white-space: pre; overflow: hidden; }
+.tab-mcdu .mcdu-cell-l { text-align: left; }
+.tab-mcdu .mcdu-cell-c { text-align: center; }
+.tab-mcdu .mcdu-cell-r { text-align: right; }
+.tab-mcdu .mcdu-rows { flex: 1; }
+.tab-mcdu .mcdu-scratchpad {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: #050709;
+    border-top: 1px solid #1f2937;
+    min-height: 28px;
+    color: #fbbf24;
+    font-weight: 700;
+}
+
+/* MCDU coloured tags (shared with desktop) */
+.mc-w  { color: #ffffff; }
+.mc-c  { color: #22d3ee; }
+.mc-g  { color: #4ade80; }
+.mc-a  { color: #fbbf24; }
+.mc-m  { color: #c084fc; }
+.mc-sm { font-size: 0.75em; }
+.mc-bg { font-size: 1.05em; font-weight: 700; }
+
+.tab-mcdu .mcdu-offline {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #94a3b8;
+    gap: 8px;
+    padding: 0 24px;
+}
+.tab-mcdu .mcdu-offline .mcdu-hint {
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+.tab-mcdu .mcdu-offline code {
+    background: #1f2937;
+    color: #67e8f9;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem;
+}
+
+/* ============ AP / FD / A/THR engagement bar (mobile) ============ */
+.ap-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.55);
+    border-bottom: 1px solid rgba(34, 211, 238, 0.25);
+}
+.ap-bar .ap-pills {
+    display: flex;
+    gap: 6px;
+}
+.ap-bar .ap-pill {
+    flex: 1;
+    text-align: center;
+    padding: 5px 0;
+    background: rgba(20, 24, 28, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 4px;
+    color: #64748b;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+.ap-bar .ap-pill.on {
+    background: rgba(74, 222, 128, 0.2);
+    border-color: #4ade80;
+    color: #4ade80;
+    box-shadow: 0 0 6px rgba(74, 222, 128, 0.45);
+}
+.ap-bar .ap-pill.arm {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: #fbbf24;
+    color: #fbbf24;
+}
+.ap-bar .ap-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: rgba(34, 211, 238, 0.08);
+    border-left: 3px solid #22d3ee;
+    border-radius: 3px;
+    color: #e2eaf3;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+.ap-bar .ap-summary .material-icons {
+    color: #22d3ee;
+    font-size: 18px;
+}
+
+/* A/THR colour conventions on mobile FMA */
+.fma-athr        { color: #fbbf24 !important; }
+.fma-athr-active { color: #4ade80 !important; }

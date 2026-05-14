@@ -1,365 +1,339 @@
-﻿using System;
-using Microsoft.FlightSimulator.SimConnect;
+using System;
 using System.Runtime.InteropServices;
-using static MSFSFlightFollowing.Models.SimConnectStructs;
 using System.Threading;
-using Microsoft.AspNetCore.SignalR;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting;
-using Microsoft.AspNetCore.Hosting;
-using FSUIPCWinformsAutoCS;
-using System.Text.RegularExpressions;
-using static MSFSFlightFollowing.Models.SimConnector;
-using System.Diagnostics.Eventing.Reader;
-using System.Reflection;
+using Microsoft.Extensions.Logging;
+using Microsoft.FlightSimulator.SimConnect;
+using MSFSFlightFollowing.Models;
+using static MSFSFlightFollowing.Models.SimConnectStructs;
 
-namespace MSFSFlightFollowing.Models
+namespace MSFSFlightFollowing.SimConnect;
+
+/// <summary>
+/// Owns the SimConnect lifecycle and exposes a clean event-based contract:
+/// <list type="bullet">
+///   <item><see cref="SnapshotReceived"/> fires once per sample (1 Hz).</item>
+///   <item><see cref="Disconnected"/> fires when SimConnect drops or we shut down.</item>
+///   <item>Implements <see cref="ISimCommands"/> for the autopilot commands the agents need.</item>
+/// </list>
+/// Has no knowledge of SignalR, EventHub, or the agent bus — those are wired up by
+/// <see cref="MSFSFlightFollowing.Runtime.SimDataDispatcher"/>.
+/// </summary>
+public sealed class SimConnector : ISimCommands, IDisposable
 {
-    public class AgentFrontEndEvent
+    private const uint WM_USER_SIMCONNECT = 0x0402;
+
+    private readonly ILogger<SimConnector> _logger;
+    private readonly IntPtr _windowHandle;
+    private readonly Func<bool> _hasConnectedClients;
+    private readonly Microsoft.Extensions.Options.IOptions<MSFSFlightFollowing.Models.FeatureOptions>? _featureOptions;
+    private CancellationTokenSource _cts = new();
+
+    private Microsoft.FlightSimulator.SimConnect.SimConnect? _simconnect;
+    private AircraftStatusModel? _latestSnapshot;
+
+    public event EventHandler<AircraftSnapshotEventArgs>? SnapshotReceived;
+    public event EventHandler? Disconnected;
+
+    public bool IsConnected => _simconnect != null;
+    public AircraftStatusModel? LatestSnapshot => _latestSnapshot;
+
+    /// <summary>
+    /// When <c>false</c>, every <see cref="ISimCommands"/> verb is a no-op
+    /// (still returns success at the HTTP layer, just doesn't transmit to MSFS).
+    /// Driven by <c>Features.Sim.WriteEnabled</c> in appsettings.json.
+    /// </summary>
+    public bool WriteEnabled => _featureOptions?.Value.Sim.WriteEnabled ?? false;
+
+    public SimConnector(
+        ILogger<SimConnector> logger,
+        IHostApplicationLifetime lifetime,
+        Microsoft.Extensions.Options.IOptions<MSFSFlightFollowing.Models.FeatureOptions> featureOptions,
+        Func<bool>? hasConnectedClients = null)
     {
-        public string agent { get; set; }
-        public string message { get; set; }
+        _logger = logger;
+        _featureOptions = featureOptions;
+        _hasConnectedClients = hasConnectedClients ?? WebSocketConnector.HasConnectedClients;
+
+        var win = MessageWindow.GetWindow();
+        _windowHandle = win.Hwnd;
+        win.WndProcHandle += OnWndProc;
+
+        lifetime.ApplicationStopping.Register(Disconnect);
     }
 
-
-    public class ClientData
+    public void Connect()
     {
-        public bool IsConnected { get; set; }
-        public AircraftStatusModel Data { get; set; }
+        if (_simconnect != null) return;
+
+        // Replace the CTS — a previous Disconnect() will have cancelled it.
+        if (_cts.IsCancellationRequested)
+        {
+            _cts.Dispose();
+            _cts = new CancellationTokenSource();
+        }
+
+        try
+        {
+            _simconnect = new Microsoft.FlightSimulator.SimConnect.SimConnect(
+                "MSFS Flight Following", _windowHandle, WM_USER_SIMCONNECT, null, 0);
+
+            _simconnect.OnRecvOpen += OnRecvOpen;
+            _simconnect.OnRecvQuit += OnRecvQuit;
+            _simconnect.OnRecvException += OnRecvException;
+            _simconnect.OnRecvSimobjectDataBytype += OnRecvSimobjectDataByType;
+        }
+        catch (COMException)
+        {
+            // Common when MSFS isn't running. Caller (reconnect loop) will retry quietly.
+            _simconnect = null;
+        }
     }
 
-    public class SimConnector
+    public void Disconnect()
     {
-        private static int eventssent = 0;
-
-        public AircraftStatusModel AircraftStatus { get; private set; }
-        public bool IsConnected => simconnect != null;
-
-        private readonly ILogger<SimConnector> _logger;
-        private IntPtr WindowHandle { get; }
-        private CancellationTokenSource cancellationToken;
-        private SimConnect simconnect = null;
-        private IHubContext<WebSocketConnector> _wsConnector;
-        private IHostApplicationLifetime _lifetime;
-        private IWebHostEnvironment _env;
-        private EventHub _eventHub;
-        private AgentManager _agentManager;
-
-        const uint WM_USER_SIMCONNECT = 0x0402;
-
-        public SimConnector(IHubContext<WebSocketConnector> wsConnector, AgentManager agentManager, ILogger<SimConnector> logger, IHostApplicationLifetime lifetime, IWebHostEnvironment env)
+        if (_simconnect == null)
         {
-            _eventHub = new EventHub();
-            _logger = logger;
-            _wsConnector = wsConnector;
-            _lifetime = lifetime;
-            _env = env;
-            _agentManager = agentManager;
-            _agentManager.RegisterSimConnectorInstance(this);
-
-            _lifetime.ApplicationStopping.Register(Disconnect);
-
-            MessageWindow win = MessageWindow.GetWindow();
-            WindowHandle = win.Hwnd;
-            win.WndProcHandle += W_WndProcHandle;
-
-            cancellationToken = new CancellationTokenSource();
-
-            // Enable for sending test data to client
-            //TestDataRunner();
+            // Still raise the event so the front-end can clear its UI even when
+            // SimConnect never connected.
+            Disconnected?.Invoke(this, EventArgs.Empty);
+            return;
         }
 
-        public void Connect()
+        _cts.Cancel();
+        _simconnect.Dispose();
+        _simconnect = null;
+        _logger.LogInformation("SimConnect was disconnected from the flight sim.");
+        Disconnected?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void Dispose() => Disconnect();
+
+    // ---------- SimConnect message-pump plumbing ----------
+
+    private IntPtr OnWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        try
         {
-            if (simconnect != null)
-                return;
-
-            try
-            {
-                simconnect = new SimConnect("MSFS Flight Following", WindowHandle, WM_USER_SIMCONNECT, null, 0);
-
-                simconnect.OnRecvOpen += OnRecvOpen;
-                simconnect.OnRecvQuit += OnRecvQuit;
-                simconnect.OnRecvException += RecvExceptionHandler;
-                simconnect.OnRecvSimobjectDataBytype += RecvSimobjectDataBytype;
-            }
-            catch (COMException ex)
-            {
-                _logger.LogError("Unable to create new SimConnect instance: {0}", ex.Message);
-                simconnect = null;
-            }
+            if (msg == WM_USER_SIMCONNECT) _simconnect?.ReceiveMessage();
         }
-
-        private IntPtr W_WndProcHandle(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
-        {
-            try
-            {
-                if (msg == WM_USER_SIMCONNECT)
-                    ReceiveSimConnectMessage();
-            }
-            catch
-            {
-                Disconnect();
-            }
-
-            return IntPtr.Zero;
-        }
-
-        private void ReceiveSimConnectMessage()
-        {
-            simconnect?.ReceiveMessage();
-        }
-
-        private void OnRecvOpen(SimConnect sender, SIMCONNECT_RECV_OPEN data)
-        {
-            SetFlightDataDefinitions();
-            Task.Run(async () =>
-            {
-                //Carlos
-                MapEvents();
-
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    await Task.Delay(1000);
-                    if (WebSocketConnector.userCount > 0)
-                    {
-                        simconnect?.RequestDataOnSimObjectType(DATA_REQUEST.AircraftStatus, DEFINITIONS.AircraftStatus, 0, SIMCONNECT_SIMOBJECT_TYPE.USER);
-                    }
-                }
-            });
-
-            
-            _logger.LogInformation("Simconnect has connected to the flight sim.");
-        }
-
-        private void OnRecvQuit(SimConnect sender, SIMCONNECT_RECV data)
+        catch
         {
             Disconnect();
         }
+        return IntPtr.Zero;
+    }
 
-        private void RecvExceptionHandler(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
+    private void OnRecvOpen(Microsoft.FlightSimulator.SimConnect.SimConnect sender, SIMCONNECT_RECV_OPEN data)
+    {
+        SimConnectDataDefinitions.Register(_simconnect!);
+        MapClientEvents();
+        _ = Task.Run(PollLoopAsync);
+        _logger.LogInformation("Simconnect has connected to the flight sim.");
+    }
+
+    private void OnRecvQuit(Microsoft.FlightSimulator.SimConnect.SimConnect sender, SIMCONNECT_RECV data)
+    {
+        Disconnect();
+    }
+
+    private void OnRecvException(Microsoft.FlightSimulator.SimConnect.SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
+    {
+        _logger.LogError("SimConnect exception: {Code}", data.dwException);
+        Disconnect();
+    }
+
+    private async Task PollLoopAsync()
+    {
+        try
         {
-            _logger.LogError("SimConnect exception: {0}", data.dwException);
-            Disconnect();
-        }
-
-        private async Task SendAgentEventsToFrontEnd()
-        {
-            
-            //if (eventssent++%3 != 0) return;
-
-            //await Task.Delay(5000);
-            //var agentEvent = new AgentFrontEndEvent()
-            //{
-            //    agent = "comms",
-            //    message = "Innsbruck airport is closed due to weather"
-            //};
-            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            //agentEvent.agent = "operator";
-            //agentEvent.message = "Searching for closest alternative in database";
-            //await Task.Delay(2000);
-            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            //agentEvent.agent = "operator";
-            //agentEvent.message = "Propose deviation to Zurich";
-            //await Task.Delay(1000);
-            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            //agentEvent.agent = "navigator";
-            //agentEvent.message = "Route to Zurich: ASOBO UW15 ZL75 ZRH";
-            //await Task.Delay(1000);
-            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            //agentEvent.agent = "navigator";
-            //agentEvent.message = "Active runaway: 28";
-            //await Task.Delay(500);
-            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-            //agentEvent.agent = "pilot";
-            //agentEvent.message = "Deviating to ZRH RWY 28";
-            //await _wsConnector.Clients.All.SendAsync("ReceiveAgentEvent", agentEvent);
-        }
-
-
-        private void RecvSimobjectDataBytype(SimConnect sender, SIMCONNECT_RECV_SIMOBJECT_DATA_BYTYPE data)
-        {
-            
-            switch (data.dwRequestID)
+            while (!_cts.IsCancellationRequested)
             {
-                case (uint)DATA_REQUEST.AircraftStatus:
-                    AircraftStatus = new AircraftStatusModel((AircraftStatusStruct)data.dwData[0]);
-                    ClientData clientData = new ClientData()
-                    {
-                        IsConnected = true,
-                        Data = AircraftStatus
-                    };
-                    _wsConnector.Clients.All.SendAsync("ReceiveData", clientData);
-
-
-                    Task.Run(() => SendAgentEventsToFrontEnd());
-
-                    Task.Run(async () => {
-                        await this._agentManager.SendEventAsync(new AgentEvent(this)
-                        {
-                            Data = clientData,
-                            EventType = EventType.AircraftDataUpdated
-                        });
-                    });
-
-                    Task.Run(() => _eventHub.SendEventAsync(clientData));
-                    
-                    break;
+                await Task.Delay(1000, _cts.Token).ConfigureAwait(false);
+                if (_hasConnectedClients())
+                {
+                    _simconnect?.RequestDataOnSimObjectType(
+                        DATA_REQUEST.AircraftStatus, DEFINITIONS.AircraftStatus, 0,
+                        SIMCONNECT_SIMOBJECT_TYPE.USER);
+                }
             }
         }
-
-        private void Disconnect()
-        {
-            ClientData clientData = new ClientData()
-            {
-                IsConnected = false
-            };
-            _wsConnector.Clients.All.SendAsync("ReceiveData", clientData);
-
-            if (simconnect == null)
-                return;
-
-            cancellationToken.Cancel();
-
-            simconnect.Dispose();
-            simconnect = null;
-
-            _logger.LogInformation("SimConnect was disconnected from the flight sim.");
-        }
-
-
-
-        private void SetFlightDataDefinitions()
-        {
-            #region Aircraft Properties
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "PLANE LATITUDE", "Degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "PLANE LONGITUDE", "Degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "PLANE ALTITUDE", "feet", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "FUEL TOTAL QUANTITY", "gallons", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "FUEL TOTAL CAPACITY", "gallons", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "PLANE HEADING DEGREES TRUE", "degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AIRSPEED INDICATED", "knots", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AIRSPEED TRUE", "knots", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            #endregion
-
-            #region Nav Properties
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "NAV HAS NAV", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "NAV HAS DME", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "NAV DME", "nautical miles", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS IS ACTIVE FLIGHT PLAN", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS IS ACTIVE WAY POINT", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS FLIGHT PLAN WP INDEX", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS WP DISTANCE", "meters", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS WP NEXT LAT", "degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS WP NEXT LON", "degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS WP PREV LAT", "degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS WP PREV LON", "degrees", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "GPS WP ETE", "seconds", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            #endregion
-
-            #region Autopilot Properties
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT AVAILABLE", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT MASTER", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT WING LEVELER", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT ALTITUDE LOCK", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT APPROACH HOLD", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT BACKCOURSE HOLD", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT FLIGHT DIRECTOR ACTIVE", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT AIRSPEED HOLD", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT MACH HOLD", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT YAW DAMPER", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOTHROTTLE ACTIVE", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT VERTICAL HOLD", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT HEADING LOCK", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "AUTOPILOT NAV1 LOCK", "bool", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            #endregion
-
-            #region FBW definitions
-            simconnect.AddToDataDefinition(DEFINITIONS.AircraftStatus, "L:A32NX_FCU_AFS_DISPLAY_HDG_TRK_VALUE", "number", SIMCONNECT_DATATYPE.INT32, 0.0f, SimConnect.SIMCONNECT_UNUSED);
-            #endregion
-
-            simconnect.RegisterDataDefineStruct<AircraftStatusStruct>(DEFINITIONS.AircraftStatus);
-        }
-
-
-
-        #region Carlos
-
-        enum EVENTS
-        {
-            UNPAUSE = 0,
-            PAUSE,
-            GEARUP,
-            GEARDOWN,
-            HEADING,
-            ALTDEC,
-            ALTPUSH,
-            ALTPULL,
-            APRPUSH,
-            AP0PUSH,
-            AP1PUSH,
-            AP2PUSH
-        };
-
-        public enum hSimconnect : int
-        {
-            group1
-        }
-        private void MapEvents()
-        {
-            simconnect.MapClientEventToSimEvent(EVENTS.GEARDOWN, "TOGGLE_BEACON_LIGHTS");
-            simconnect.MapClientEventToSimEvent(EVENTS.HEADING, "A32NX.FCU_HDG_SET");
-            simconnect.MapClientEventToSimEvent(EVENTS.ALTDEC, "A32NX.FCU_ALT_SET");
-            simconnect.MapClientEventToSimEvent(EVENTS.ALTPUSH, "A32NX.FCU_ALT_PUSH");
-            simconnect.MapClientEventToSimEvent(EVENTS.ALTPULL, "A32NX.FCU_ALT_PULL");
-            simconnect.MapClientEventToSimEvent(EVENTS.APRPUSH, "A32NX.FCU_APPR_PUSH");
-            simconnect.MapClientEventToSimEvent(EVENTS.AP1PUSH, "A32NX.FCU_AP_1_PUSH;");
-            simconnect.MapClientEventToSimEvent(EVENTS.AP2PUSH, "A32NX.FCU_AP_2_PUSH;");
-        }
-
-        public void StartApproach()
-        {
-            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.APRPUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
-            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.AP1PUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
-            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.AP2PUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
-        }
-
-        public void StartDecent()
-        {
-            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.ALTDEC, (uint)4000, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
-            simconnect.TransmitClientEvent((uint)SimConnect.SIMCONNECT_OBJECT_ID_USER, EVENTS.ALTPUSH, (uint)0, hSimconnect.group1, SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
-        }
-        #endregion
-
-        #region TestData
-        public void TestDataRunner()
-        {
-            if (!_env.IsDevelopment())
-                return;
-
-            Thread runner = new Thread((obj) =>
-            {
-                while (true)
-                {
-                    Thread.Sleep(1000);
-                    _wsConnector.Clients.All.SendAsync("ReceiveData", GenTestData());
-                }
-            });
-            runner.IsBackground = true;
-            runner.Start();
-        }
-
-        private ClientData GenTestData()
-        {
-            var wsData = new ClientData()
-            {
-                IsConnected = true,
-                Data = AircraftStatusModel.GetDummyData()
-            };
-            return wsData;
-        }
-        #endregion
+        catch (OperationCanceledException) { /* shutdown */ }
     }
+
+    private void OnRecvSimobjectDataByType(
+        Microsoft.FlightSimulator.SimConnect.SimConnect sender,
+        SIMCONNECT_RECV_SIMOBJECT_DATA_BYTYPE data)
+    {
+        if (data.dwRequestID != (uint)DATA_REQUEST.AircraftStatus) return;
+
+        var model = new AircraftStatusModel((AircraftStatusStruct)data.dwData[0]);
+        _latestSnapshot = model;
+        try
+        {
+            SnapshotReceived?.Invoke(this, new AircraftSnapshotEventArgs(model));
+        }
+        catch (Exception ex)
+        {
+            // Never let a downstream handler crash the SimConnect pump.
+            _logger.LogWarning(ex, "SnapshotReceived handler threw");
+        }
+    }
+
+    // ---------- ISimCommands ----------
+
+    private enum ClientEvent
+    {
+        // Legacy fixed-ID slots kept so we don't have to migrate the few non-FCU mappings.
+        Unpause = 0,
+        Pause,
+        GearUp,
+        GearDown,
+    }
+
+    private enum NotificationGroup
+    {
+        Default = 0
+    }
+
+    // Dynamic event mapping. SimConnect's MapClientEventToSimEvent only cares about
+    // the numeric value of the enum we pass it, so we can mint new IDs at runtime
+    // from a counter and cast them through this single-member enum.
+    private enum DynamicId : uint { Zero = 0 }
+
+    private readonly System.Collections.Generic.Dictionary<string, uint> _eventIdByName = new();
+    private uint _nextDynamicEventId = 10_000;
+
+    private void MapClientEvents()
+    {
+        var sim = _simconnect!;
+        // Only one legacy fixed mapping; everything else is mapped lazily through TransmitEventByName.
+        sim.MapClientEventToSimEvent(ClientEvent.GearDown, "TOGGLE_BEACON_LIGHTS");
+    }
+
+    private uint EnsureMapped(string eventName)
+    {
+        if (_eventIdByName.TryGetValue(eventName, out var id)) return id;
+        var sim = _simconnect;
+        if (sim == null) return 0;
+        id = _nextDynamicEventId++;
+        sim.MapClientEventToSimEvent((DynamicId)id, eventName);
+        _eventIdByName[eventName] = id;
+        return id;
+    }
+
+    private void TransmitEventByName(string eventName, uint payload = 0)
+    {
+        var sim = _simconnect;
+        if (sim == null) return;
+        // Hard write-guard: when the user has not explicitly enabled write
+        // mode, drop every transmit so opening the app cannot move knobs.
+        if (!WriteEnabled)
+        {
+            _logger.LogInformation("Sim write skipped (Features.Sim.WriteEnabled = false): {Event} payload={Payload}", eventName, payload);
+            return;
+        }
+        var id = EnsureMapped(eventName);
+        sim.TransmitClientEvent(
+            Microsoft.FlightSimulator.SimConnect.SimConnect.SIMCONNECT_OBJECT_ID_USER,
+            (DynamicId)id,
+            payload,
+            NotificationGroup.Default,
+            SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
+    }
+
+    /// <summary>Transmits the same FCU command twice — once as A32NX.&lt;suffix&gt; and
+    /// once as A339X.&lt;suffix&gt;. This way a single command works for both the
+    /// FlyByWire A32NX and the Headwind A330-900; MSFS silently ignores the prefix
+    /// the loaded aircraft doesn't subscribe to.</summary>
+    private void TransmitFcu(string suffix, uint payload = 0)
+    {
+        TransmitEventByName("A32NX." + suffix, payload);
+        TransmitEventByName("A339X." + suffix, payload);
+    }
+
+    private void Transmit(ClientEvent ev, uint payload = 0)
+    {
+        var sim = _simconnect;
+        if (sim == null) return;
+        // Hard write-guard — same as TransmitEventByName.
+        if (!WriteEnabled)
+        {
+            _logger.LogInformation("Sim write skipped (Features.Sim.WriteEnabled = false): {Event} payload={Payload}", ev, payload);
+            return;
+        }
+
+        sim.TransmitClientEvent(
+            Microsoft.FlightSimulator.SimConnect.SimConnect.SIMCONNECT_OBJECT_ID_USER,
+            ev,
+            payload,
+            NotificationGroup.Default,
+            SIMCONNECT_EVENT_FLAG.GROUPID_IS_PRIORITY);
+    }
+
+    public void BeginDescent(int targetAltitudeFeet)
+    {
+        if (_simconnect == null)
+        {
+            _logger.LogWarning("BeginDescent skipped: SimConnect not connected.");
+            return;
+        }
+        TransmitFcu("FCU_ALT_SET", (uint)targetAltitudeFeet);
+        TransmitFcu("FCU_ALT_PUSH");
+        _logger.LogInformation("BeginDescent target={Feet} ft", targetAltitudeFeet);
+    }
+
+    public void EngageAltitudeHold(int currentAltitudeFeet)
+    {
+        if (_simconnect == null)
+        {
+            _logger.LogWarning("EngageAltitudeHold skipped: SimConnect not connected.");
+            return;
+        }
+        var rounded = (int)System.Math.Round(currentAltitudeFeet / 100.0) * 100;
+        TransmitFcu("FCU_ALT_SET", (uint)rounded);
+        TransmitFcu("FCU_ALT_PUSH");
+        _logger.LogInformation("EngageAltitudeHold captured {Feet} ft", rounded);
+    }
+
+    public void EngageApproach()
+    {
+        if (_simconnect == null)
+        {
+            _logger.LogWarning("EngageApproach skipped: SimConnect not connected.");
+            return;
+        }
+        TransmitFcu("FCU_APPR_PUSH");
+        TransmitFcu("FCU_AP_1_PUSH");
+        TransmitFcu("FCU_AP_2_PUSH");
+        _logger.LogInformation("EngageApproach: APPR + AP1 + AP2");
+    }
+
+    // ---------- FCU panel verbs ----------
+
+    public void FcuSetSpeed(int knots)          { if (_simconnect == null) return; TransmitFcu("FCU_SPD_SET", (uint)knots); }
+    public void FcuPushSpeed()                  { if (_simconnect == null) return; TransmitFcu("FCU_SPD_PUSH"); }
+    public void FcuPullSpeed()                  { if (_simconnect == null) return; TransmitFcu("FCU_SPD_PULL"); }
+
+    public void FcuSetHeading(int degrees)      { if (_simconnect == null) return; TransmitFcu("FCU_HDG_SET", (uint)((degrees % 360 + 360) % 360)); }
+    public void FcuPushHeading()                { if (_simconnect == null) return; TransmitFcu("FCU_HDG_PUSH"); }
+    public void FcuPullHeading()                { if (_simconnect == null) return; TransmitFcu("FCU_HDG_PULL"); }
+
+    public void FcuSetAltitude(int feet)        { if (_simconnect == null) return; var r = (int)System.Math.Round(feet / 100.0) * 100; TransmitFcu("FCU_ALT_SET", (uint)r); }
+    public void FcuPushAltitude()               { if (_simconnect == null) return; TransmitFcu("FCU_ALT_PUSH"); }
+    public void FcuPullAltitude()               { if (_simconnect == null) return; TransmitFcu("FCU_ALT_PULL"); }
+
+    // V/S can be negative -- the WASM module reads the payload as a signed int, so we
+    // pass the raw bits of the int as uint via unchecked cast.
+    public void FcuSetVerticalSpeed(int fpm)    { if (_simconnect == null) return; TransmitFcu("FCU_VS_SET", unchecked((uint)fpm)); }
+    public void FcuPushVerticalSpeed()          { if (_simconnect == null) return; TransmitFcu("FCU_VS_PUSH"); }
+    public void FcuPullVerticalSpeed()          { if (_simconnect == null) return; TransmitFcu("FCU_VS_PULL"); }
+
+    public void FcuToggleAp1()                  { if (_simconnect == null) return; TransmitFcu("FCU_AP_1_PUSH"); }
+    public void FcuToggleAp2()                  { if (_simconnect == null) return; TransmitFcu("FCU_AP_2_PUSH"); }
+    public void FcuToggleAthr()                 { if (_simconnect == null) return; TransmitFcu("FCU_ATHR_PUSH"); }
+    public void FcuPushLoc()                    { if (_simconnect == null) return; TransmitFcu("FCU_LOC_PUSH"); }
+    public void FcuPushAppr()                   { if (_simconnect == null) return; TransmitFcu("FCU_APPR_PUSH"); }
+    public void FcuPushExped()                  { if (_simconnect == null) return; TransmitFcu("FCU_EXPED_PUSH"); }
 }
-

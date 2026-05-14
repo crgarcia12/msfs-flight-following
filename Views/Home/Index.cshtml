@@ -3,13 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>MSFS Flight Following</title>
+    <link rel="icon" type="image/svg+xml" href="~/favicon.svg">
     <!-- Styles -->
     <link rel="stylesheet" href="~/css/normalize.css">
     <link href="https://unpkg.com/tailwindcss@@^1.0/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" integrity="sha512-xodZBNTC5n17Xt2atTPuE1HxjVMSvLVW9ocqUKLsCC5CXdbqCmblAshOMAS6/keqq/sMZMZ19scR4PsZChSR7A==" crossorigin="" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-easybutton@2/src/easy-button.css">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <link href="~/css/main.css" rel="stylesheet" />
     <!-- Scripts -->
     <environment include="Development">
@@ -23,149 +25,435 @@
     <script src="https://cdn.jsdelivr.net/npm/leaflet-easybutton@2/src/easy-button.js"></script>
     <script src='//unpkg.com/leaflet-arc/bin/leaflet-arc.min.js'></script>
     <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
-    <!-- Carlos -->
-    <style>
-        .chat-bubble {
-            background-color: #f1f1f1;
-            border-radius: 15px;
-            padding: 10px;
-            margin: 10px 0;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-        }
-        .chat-bubble .material-icons {
-            margin-left: 10px;
-        }
-    </style>
-    <!-- END Carlos -->
 </head>
 <body class="h-full">
     <div id="container" class="flex flex-col h-screen">
-        <div id="hud" class="relative flex justify-center items-center bg-gray-800 text-orange-100" v-bind:class="barHidden ? 'h-8' : 'h-32'">
-            <div id="data" class="w-full h-full overflow-x-auto md:overflow-x-hidden md:grid grid-flow-col grid-cols-2 grid-rows-2 lg:grid-rows-none lg:grid-cols-3" v-if="simConnected" v-bind:class="{ barHidden : barHidden }">
-                <div class="mt-2 flex flex-row justify-center lg:col-start-2 lg:col-span-1" v-bind:class="[ acInfo.autopilot.available ? 'col-start-2' : 'col-start-1 col-span-2' ]">
-                    <div id="airspeedContainer" class="mr-12 lg:mr-16 text-center">
-                        <h2 class="text-sm lg:text-lg">Airspeed</h2>
-                        <p id="indicatedAirspeed" class="text-3xl lg:text-4xl">{{ Math.round(acInfo.airspeedIndicated) }} kts</p>
-                        <p id="trueAirspeed" class="text-sm">{{ Math.round(acInfo.airspeedTrue) }} kts (TAS)</p>
+
+        <!-- Top Bar / Glass-cockpit HUD -->
+        <div id="hud" :class="{ collapsed: barHidden }">
+            <div class="hud-left">
+                <div class="brand">
+                    <span class="brand-mark">✈</span>
+                    <span class="brand-text">FLIGHT FOLLOWING</span>
+                </div>
+                <div class="phase-pill" :class="'phase-' + phaseClass">
+                    <span class="material-icons phase-icon">{{ phaseIcon }}</span>
+                    <span class="phase-label">{{ phase }}</span>
+                </div>
+                <!-- Airbus FMA banner — proper 3-column readout (A/THR | PITCH | ROLL)
+                     plus AP / FD / A/THR engagement pills, mirrors the top-of-PFD strip.
+                     Only shown when the FBW A32NX (or Headwind A330) FMA is producing data. -->
+                <div class="fma" v-if="hasFma" :class="{ 'fma-alert': acInfo.fmaIsSrs }">
+                    <div class="fma-col fma-col-athr">
+                        <div class="fma-active fma-athr"
+                             :class="{ 'fma-athr-active': acInfo.fmaAthrActive }">{{ acInfo.fmaAthr || '—' }}</div>
+                        <div class="fma-armed">{{ acInfo.fmaAthrArmed && !acInfo.fmaAthrActive ? 'ARM' : '' }}</div>
                     </div>
-                    <div id="altitudeContainer" class="mr-12 lg:mr-16 text-center">
-                        <h2 class="text-sm lg:text-lg">Altitude</h2>
-                        <p id="altitude" class="text-3xl lg:text-4xl">{{ Math.round(acInfo.altitude) }} ft</p>
+                    <div class="fma-col">
+                        <div class="fma-active" :class="{ 'fma-srs': acInfo.fmaIsSrs }">{{ acInfo.fmaPitch || '—' }}</div>
+                        <div class="fma-armed">{{ acInfo.fmaPitchArmed }}</div>
                     </div>
-                    <div id="fuelContainer" class="lg:mr-16 text-center">
-                        <h2 class="text-sm lg:text-lg">Fuel</h2>
-                        <p id="fuel" class="text-3xl lg:text-4xl" v-bind:class="fuelQuantityPercent <= 10 ? 'text-red-600' : 'text-orange-100'">{{ fuelQuantityPercent }}%</p>
+                    <div class="fma-col">
+                        <div class="fma-active">{{ acInfo.fmaRoll || '—' }}</div>
+                        <div class="fma-armed">{{ acInfo.fmaRollArmed }}</div>
+                    </div>
+                    <!-- AP / FD / A/THR engagement pills — green when active.
+                         Shows at a glance who's actually flying the plane. -->
+                    <div class="ap-pills">
+                        <span class="ap-pill" :class="{ on: acInfo.a32nxAp1 }" title="Autopilot 1">AP1</span>
+                        <span class="ap-pill" :class="{ on: acInfo.a32nxAp2 }" title="Autopilot 2">AP2</span>
+                        <span class="ap-pill" :class="{ on: acInfo.autopilot && acInfo.autopilot.flightDirector }" title="Flight Director">FD</span>
+                        <span class="ap-pill" :class="{ on: acInfo.fmaAthrActive, arm: acInfo.fmaAthrArmed && !acInfo.fmaAthrActive }" title="Autothrust">A/THR</span>
+                    </div>
+                    <!-- T/D REACHED pill -- shows when the FBW VNAV says we've crossed top of descent. -->
+                    <div v-if="acInfo.a32nxTdReached" class="td-pill" title="Top of descent reached">
+                        <span class="material-icons">south_east</span>
+                        T/D
+                    </div>
+                    <button v-if="acInfo.fmaIsSrs" class="fma-recover" v-on:click="recoverAltitude" title="Capture current altitude on the FCU and engage ALT hold">
+                        <span class="material-icons">vertical_align_center</span>
+                        RECOVER ALT
+                    </button>
+                    <button class="fma-descend" v-on:click="beginDescent" title="Set FCU ALT lower and push ALT for managed descent (A32NX + Headwind A330)">
+                        <span class="material-icons">arrow_downward</span>
+                        BEGIN DESCENT
+                    </button>
+                </div>
+
+                <!-- Plain-English current-mode summary, for non-Airbus pilots.
+                     Always shown when the sim is connected, regardless of airframe. -->
+                <div class="ap-summary" v-if="simConnected">
+                    <span class="ap-summary-icon material-icons">{{ apSummaryIcon }}</span>
+                    <span class="ap-summary-text">{{ apSummary }}</span>
+                </div>
+            </div>
+
+            <div class="hud-center" v-if="simConnected">
+                <div class="gauge gauge-speed">
+                    <div class="gauge-label">IAS</div>
+                    <div class="gauge-value">{{ Math.round(acInfo.airspeedIndicated) }}</div>
+                    <div class="gauge-unit">kts</div>
+                    <div class="gauge-sub">
+                        GS {{ Math.round(acInfo.groundSpeedKnots || 0) }} · TAS {{ Math.round(acInfo.airspeedTrue) }}
                     </div>
                 </div>
-                <div class="flex justify-center mt-2 lg:block row-start-2 col-start-1 col-end-3 lg:row-span-1 lg:col-start-3" v-show="acInfo.gpsWaypointModeActive">
-                    <h2 class="text-lg hidden lg:block">Navigation</h2>
-                    <p id="wpDistance" class="mr-6">Distance to next WP: {{ Math.round(acInfo.gpsWaypointDistance / 1000) }} km</p>
-                    <p id="wpETE">ETE to next WP: {{ convertSecondsToHMS(acInfo.gpswpete) }}</p>
+                <div class="gauge gauge-alt">
+                    <div class="gauge-label">ALT</div>
+                    <div class="gauge-value">{{ altDisplay.value }}</div>
+                    <div class="gauge-unit">{{ altDisplay.unit }}</div>
+                    <div class="gauge-sub">
+                        <span :class="vsClass">{{ vsArrow }} {{ Math.abs(Math.round(acInfo.verticalSpeedFpm || 0)) }} fpm</span>
+                        <span v-if="showRadioAlt" class="radio-alt">RA {{ Math.round(acInfo.radioAltitudeFeet) }}</span>
+                    </div>
                 </div>
-                <div id="autopilotContainer" class="flex flex-col items-center my-2 col-start-1" v-show="acInfo.autopilot.available">
-                    <h2 class="text-sm lg:text-lg">Autopilot</h2>
-                    <div class="flex justify-center w-full grid grid-flow-col grid-rows-2 gap-y-2 lg:gap-2">
-                        <div class="flex flex-col items-center statusPillContainer" v-for="(value, key) in autopilotProperties" v-bind:key="key">
-                            <div class="text-sm">{{ apDisplayName(key) }}</div>
-                            <div class="rounded-full statusPill" v-bind:class="[value ? 'bg-green-500' : 'bg-red-600']" v-bind:title="key"></div>
+                <div class="gauge gauge-hdg">
+                    <div class="gauge-label">HDG</div>
+                    <div class="gauge-value">{{ formatHeading(acInfo.trueHeading) }}</div>
+                    <div class="gauge-unit">°</div>
+                    <div class="compass-tape">
+                        <div class="compass-track" :style="{ transform: 'translateX(' + (-acInfo.trueHeading * 2) + 'px)' }">
+                            <span v-for="h in compassTicks" :key="h" class="compass-tick">{{ h }}</span>
+                        </div>
+                        <div class="compass-pointer">▼</div>
+                    </div>
+                </div>
+                <div class="gauge gauge-fuel">
+                    <div class="gauge-label">FUEL</div>
+                    <div class="gauge-value" :class="fuelClass">{{ fuelQuantityPercent }}<span class="gauge-pct">%</span></div>
+                    <div class="fuel-bar">
+                        <div class="fuel-bar-fill" :class="fuelClass" :style="{ width: fuelQuantityPercent + '%' }"></div>
+                    </div>
+                </div>
+                <div class="gauge gauge-env">
+                    <div class="gauge-label">ENV</div>
+                    <div class="env-row"><span class="env-key">WIND</span> <span class="env-val">{{ windDisplay }}</span></div>
+                    <div class="env-row"><span class="env-key">OAT</span> <span class="env-val">{{ oatDisplay }}</span></div>
+                    <div class="env-row"><span class="env-key">G</span> <span class="env-val" :class="gClass">{{ gDisplay }}</span></div>
+                </div>
+                <div class="gauge gauge-config">
+                    <div class="gauge-label">CONFIG</div>
+                    <div class="flap-bar" :title="'Flaps ' + flapNotation">
+                        <div v-for="(notch, idx) in flapNotches" :key="idx"
+                             class="flap-notch" :class="{ on: idx <= acInfo.flapsHandleIndex && acInfo.flapsHandleIndex > 0 }">
+                            <span class="flap-tick"></span>
+                            <span class="flap-tick-label">{{ notch }}</span>
+                        </div>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-chip" :class="{ on: !acInfo.onGround }">{{ acInfo.onGround ? 'GND' : 'AIR' }}</span>
+                        <span class="config-chip" v-if="acInfo.a32nxFwcFlightPhase > 0" :class="{ on: acInfo.a32nxSpoilersArmed }">SPLR</span>
+                        <span class="config-chip" v-if="autobrakeLabel" :class="{ on: acInfo.a32nxAutobrakesMode > 0 }">BRK {{ autobrakeLabel }}</span>
+                        <span class="config-chip" v-if="thrustLimitLabel" :class="{ on: true }">{{ thrustLimitLabel }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hud-center disconnected" v-else>
+                <p v-if="simConnected === null">Connecting to the flight sim…</p>
+                <p v-else>Sim not connected. Start MSFS, then refresh.</p>
+            </div>
+
+            <div class="hud-right">
+                <div class="ap-strip" v-if="acInfo && acInfo.autopilot && acInfo.autopilot.available">
+                    <div class="ap-label">AUTOPILOT</div>
+                    <div class="ap-pills">
+                        <div v-for="(value, key) in autopilotProperties" :key="key"
+                             class="ap-pill" :class="{ on: value }" :title="key">
+                            {{ apDisplayName(key) }}
+                        </div>
+                    </div>
+                </div>
+                <div class="status-badges">
+                    <a href="/m" class="status-dot mobile-link" title="Open mobile view (for phones/tablets)">
+                        <span class="material-icons" style="font-size: 0.95rem; vertical-align: middle;">smartphone</span>
+                    </a>
+                    <div class="status-dot" :class="statusClass(simConnected)" title="Sim Connect">SIM</div>
+                    <div class="status-dot" :class="simBridgeDotClass" :title="'SimBridge: ' + services.simBridgeStatus">BRG</div>
+                    <div class="status-dot" :class="statusClass(services.eventHub)" title="Azure Event Hub">CLD</div>
+                    <div class="status-dot" v-if="vatsim.controllers.length > 0" :class="vatsimDotClass" :title="'VATSIM: ' + vatsim.controllers.length + ' controller(s) in range'" v-on:click="vatsimPanelOpen = !vatsimPanelOpen">VAT {{ vatsim.controllers.length }}</div>
+                </div>
+            </div>
+
+            <button class="hud-collapse" v-on:click="barHidden = !barHidden" :title="barHidden ? 'Show HUD' : 'Hide HUD'">
+                <span class="material-icons">{{ barHidden ? 'expand_more' : 'expand_less' }}</span>
+            </button>
+        </div>
+
+        <!-- Map area -->
+        <div class="flex-1 h-full relative map-area">
+            <div id="map" class="h-full"></div>
+
+            <!-- Floating left toolbar (custom buttons) -->
+            <div class="leaflet-touch leaflet-top leaflet-left custom-control absolute left-0">
+                <div class="leaflet-bar leaflet-control">
+                    <button type="button" class="leaflet-bar-part leaflet-interactive" v-on:click="showSearch = !showSearch" title="Search airport">
+                        <span class="material-icons">search</span>
+                    </button>
+                    <div v-if="showSearch" id="searchBoxContainer" class="absolute bg-white box-content">
+                        <input type="text" placeholder="ICAO or name…" class="h-full w-full" v-model="searchText" v-on:input="searchAirports" />
+                        <div id="searchResults" class="bg-white" v-if="searchResults.length > 0">
+                            <ul>
+                                <li v-for="(item, index) in searchResults[0]" v-bind:key="index" v-on:click="focusAirport(item)" class="px-3 py-2 cursor-pointer hover:bg-gray-200">{{ item.name }}</li>
+                            </ul>
                         </div>
                     </div>
                 </div>
             </div>
-            <div id="connectionRequired" class="text-center" v-else>
-                <p class="text-xl" v-if="simConnected === null">Connecting to the flight sim...</p>
-                <p class="text-xl" v-else-if="!simConnected">Unable to connect to the flight sim. Please make sure the flight sim is running and restart the app.</p>
-            </div>
-            <div class="absolute bottom-0 right-0 cursor-pointer">
-                <span class="material-icons mr-2" v-on:click="barHidden = !barHidden">{{ barHidden ? 'expand_more' : 'expand_less' }}</span>
-            </div>
-        </div>
-        <div class="flex-1 h-full relative">
-            <div id="map" class="h-full"></div>
-            <div id="airportInfo" class="absolute top-0 right-0 bg-white shadow-lg overflow-y-auto flex-1 h-full">
-                <div class="flex justify-between items-center bg-orange-400 p-4">
-                    <h2 class="text-lg font-bold">Agent Events</h2>
-                    <span class="material-icons cursor-pointer" v-on:click="selectedAirport = null">close</span>
-                </div>
 
-                <!-- # Carlos -->
-                <ul>
-                    <li v-for="event in agentevents">
-                        <div class="p-4 chat-bubble">
-                            <div class="flex justify-between items-center">
-                                <h3 :class="['text-lg', 'font-bold', getAgentClass(event.agent)]">
-                                    <i class="material-icons">{{ getAgentIcon(event.agent) }}</i>
-                                    {{ event.agent }}:
-                                </h3> {{ event.message }}
-                            </div>
+            <!-- Right rail: agent chat panel -->
+            <div class="agent-tab" v-show="!agentPanelOpen" v-on:click="openAgentPanel">
+                <span class="material-icons">forum</span>
+                <span class="agent-tab-label">AGENTS</span>
+                <span class="agent-tab-badge" v-if="unreadAgentEvents > 0">{{ unreadAgentEvents }}</span>
+            </div>
+            <div class="agent-panel" :class="{ open: agentPanelOpen }">
+                <div class="agent-panel-head">
+                    <span class="material-icons">support_agent</span>
+                    <h2>Agent Activity</h2>
+                    <button class="icon-btn" v-on:click="agentTtsEnabled = !agentTtsEnabled" :title="agentTtsEnabled ? 'Mute callouts' : 'Speak callouts'">
+                        <span class="material-icons">{{ agentTtsEnabled ? 'volume_up' : 'volume_off' }}</span>
+                    </button>
+                    <button class="icon-btn" v-on:click="clearAgentEvents" title="Clear">
+                        <span class="material-icons">delete_sweep</span>
+                    </button>
+                    <button class="icon-btn" v-on:click="agentPanelOpen = false" title="Collapse">
+                        <span class="material-icons">chevron_right</span>
+                    </button>
+                </div>
+                <ul class="agent-feed" ref="agentFeed">
+                    <li v-if="agentevents.length === 0" class="agent-empty">
+                        Waiting for agent events…
+                    </li>
+                    <li v-for="(event, idx) in agentevents" :key="idx" class="agent-msg" :class="'agent-' + agentKey(event.agent)">
+                        <div class="agent-avatar">
+                            <span class="material-icons">{{ getAgentIcon(event.agent) }}</span>
+                        </div>
+                        <div class="agent-bubble">
+                            <div class="agent-name">{{ event.agent }}</div>
+                            <div class="agent-text">{{ event.message }}</div>
                         </div>
                     </li>
                 </ul>
-                <!-- # Carlos -->
+            </div>
 
+            <!-- Left rail: VATSIM panel -->
+            <div class="vatsim-tab" v-show="!vatsimPanelOpen && vatsim.controllers.length > 0" v-on:click="vatsimPanelOpen = true">
+                <span class="material-icons">radio</span>
+                <span class="vatsim-tab-label">VATSIM</span>
+                <span class="vatsim-tab-badge">{{ vatsim.controllers.length }}</span>
             </div>
-        </div>
-        <div class="leaflet-touch leaflet-top leaflet-left custom-control absolute left-0">
-            <div class="leaflet-bar leaflet-control">
-                <button type="button" class="leaflet-bar-part leaflet-interactive unnamed-state-active" v-on:click="showSearch = !showSearch">
-                    <span class="button-state state-unnamed-state unnamed-state-active">
-                        <span class="material-icons">search</span>
-                    </span>
-                </button>
-                <div v-if="showSearch" id="searchBoxContainer" class="absolute bg-white box-content">
-                    <input type="text" name="name" value="" class="h-full w-full" v-model="searchText" v-on:input="searchAirports" />
-                    <div id="searchResults" class="bg-white" v-if="searchResults.length > 0">
-                        <ul>
-                            <li v-for="(item, index) in searchResults[0]" v-bind:key="index" v-on:click="focusAirport(item)" class="px-3 py-2 cursor-pointer hover:bg-gray-200">{{ item.name }}</li>
+            <div class="vatsim-panel" :class="{ open: vatsimPanelOpen }">
+                <div class="vatsim-panel-head">
+                    <span class="material-icons">radio</span>
+                    <h2>VATSIM<span class="vatsim-count" v-if="vatsim.controllers.length > 0">{{ vatsim.controllers.length }}</span></h2>
+                    <button class="icon-btn" v-on:click="vatsimPanelOpen = false" title="Collapse">
+                        <span class="material-icons">chevron_left</span>
+                    </button>
+                </div>
+                <div class="vatsim-panel-body">
+                    <div v-if="vatsim.controllers.length === 0" class="vatsim-empty">
+                        No controllers in range.<br>
+                        <small v-if="vatsim.everReceived === false">Enable <code>Features.Vatsim</code> to see online ATC.</small>
+                    </div>
+                    <div v-for="group in groupedVatsim" :key="group.facility" class="vatsim-group">
+                        <div class="vatsim-group-head">{{ group.facility }}</div>
+                        <div v-for="ctrl in group.list" :key="ctrl.callsign" class="vatsim-row" :class="{ atis: ctrl.facilityShort === 'ATIS' }">
+                            <div class="vatsim-row-main">
+                                <div class="vatsim-callsign">{{ ctrl.callsign }}<span v-if="ctrl.atisCode" class="atis-letter">{{ ctrl.atisCode }}</span></div>
+                                <div class="vatsim-meta">
+                                    <span class="vatsim-freq">{{ ctrl.frequency }}</span>
+                                    <span class="vatsim-dist">{{ ctrl.distanceNm }} NM</span>
+                                </div>
+                                <div class="vatsim-name">{{ ctrl.controllerName }}</div>
+                            </div>
+                            <div class="vatsim-row-actions">
+                                <button class="icon-btn" v-if="ctrl.atisText" v-on:click="toggleAtisExpand(ctrl.callsign)" :title="atisExpanded[ctrl.callsign] ? 'Hide ATIS' : 'Show ATIS'">
+                                    <span class="material-icons">{{ atisExpanded[ctrl.callsign] ? 'expand_less' : 'expand_more' }}</span>
+                                </button>
+                                <button class="icon-btn" v-if="ctrl.atisText" v-on:click="speakAtis(ctrl)" :title="speakingCallsign === ctrl.callsign ? 'Stop' : 'Speak ATIS'">
+                                    <span class="material-icons">{{ speakingCallsign === ctrl.callsign ? 'stop' : 'volume_up' }}</span>
+                                </button>
+                            </div>
+                            <pre class="vatsim-atis-text" v-if="ctrl.atisText && atisExpanded[ctrl.callsign]">{{ ctrl.atisText }}</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom rail: clickable FCU panel (A32NX + Headwind A330) -->
+            <div class="fcu-tab" v-show="!fcuPanelOpen" v-on:click="fcuPanelOpen = true" title="Open FCU">
+                <span class="material-icons">tune</span>
+                <span>FCU</span>
+            </div>
+            <div class="fcu-panel" :class="{ open: fcuPanelOpen, 'fcu-read-only': !services.simWriteEnabled }">
+                <div class="fcu-head">
+                    <span class="material-icons">tune</span>
+                    <h2>FCU <span class="fcu-airframe">A32NX&nbsp;&nbsp;·&nbsp;&nbsp;A330</span></h2>
+                    <span v-if="!services.simWriteEnabled" class="fcu-readonly-badge" title="App will not transmit to MSFS. Set Features.Sim.WriteEnabled=true in appsettings.json to take control.">READ&nbsp;ONLY</span>
+                    <button class="icon-btn" v-on:click="fcuPanelOpen = false" title="Collapse">
+                        <span class="material-icons">expand_more</span>
+                    </button>
+                </div>
+                <div class="fcu-body">
+                    <!-- SPD knob -->
+                    <div class="fcu-knob">
+                        <div class="fcu-knob-label">SPD</div>
+                        <div class="fcu-display">{{ fcu.spd }}</div>
+                        <div class="fcu-steppers">
+                            <button v-on:click="fcuStep('spd', -10)">−10</button>
+                            <button v-on:click="fcuStep('spd', -1)">−1</button>
+                            <button v-on:click="fcuStep('spd', +1)">+1</button>
+                            <button v-on:click="fcuStep('spd', +10)">+10</button>
+                        </div>
+                        <div class="fcu-pushpull">
+                            <button v-on:click="fcuPost('spd/pull')">PULL</button>
+                            <button v-on:click="fcuPost('spd/push')">PUSH</button>
+                        </div>
+                    </div>
+
+                    <!-- HDG knob -->
+                    <div class="fcu-knob">
+                        <div class="fcu-knob-label">HDG</div>
+                        <div class="fcu-display">{{ String(fcu.hdg).padStart(3, '0') }}</div>
+                        <div class="fcu-steppers">
+                            <button v-on:click="fcuStep('hdg', -10)">−10</button>
+                            <button v-on:click="fcuStep('hdg', -1)">−1</button>
+                            <button v-on:click="fcuStep('hdg', +1)">+1</button>
+                            <button v-on:click="fcuStep('hdg', +10)">+10</button>
+                        </div>
+                        <div class="fcu-pushpull">
+                            <button v-on:click="fcuPost('hdg/pull')">PULL</button>
+                            <button v-on:click="fcuPost('hdg/push')">PUSH</button>
+                        </div>
+                    </div>
+
+                    <!-- ALT knob -->
+                    <div class="fcu-knob">
+                        <div class="fcu-knob-label">ALT
+                            <button class="fcu-mini" :class="{ active: fcu.altStep === 1000 }" v-on:click="fcu.altStep = fcu.altStep === 1000 ? 100 : 1000">{{ fcu.altStep }}</button>
+                        </div>
+                        <div class="fcu-display">{{ fcu.alt }}</div>
+                        <div class="fcu-steppers">
+                            <button v-on:click="fcuStep('alt', -fcu.altStep * 10)">−{{ fcu.altStep * 10 }}</button>
+                            <button v-on:click="fcuStep('alt', -fcu.altStep)">−{{ fcu.altStep }}</button>
+                            <button v-on:click="fcuStep('alt', +fcu.altStep)">+{{ fcu.altStep }}</button>
+                            <button v-on:click="fcuStep('alt', +fcu.altStep * 10)">+{{ fcu.altStep * 10 }}</button>
+                        </div>
+                        <div class="fcu-pushpull">
+                            <button v-on:click="fcuPost('alt/pull')">PULL</button>
+                            <button v-on:click="fcuPost('alt/push')">PUSH</button>
+                        </div>
+                    </div>
+
+                    <!-- V/S knob -->
+                    <div class="fcu-knob">
+                        <div class="fcu-knob-label">V/S</div>
+                        <div class="fcu-display">{{ fcu.vs > 0 ? '+' + fcu.vs : fcu.vs }}</div>
+                        <div class="fcu-steppers">
+                            <button v-on:click="fcuStep('vs', -500)">−500</button>
+                            <button v-on:click="fcuStep('vs', -100)">−100</button>
+                            <button v-on:click="fcuStep('vs', +100)">+100</button>
+                            <button v-on:click="fcuStep('vs', +500)">+500</button>
+                        </div>
+                        <div class="fcu-pushpull">
+                            <button v-on:click="fcuPost('vs/pull')">PULL</button>
+                            <button v-on:click="fcuPost('vs/push')">PUSH</button>
+                        </div>
+                    </div>
+
+                    <!-- Buttons -->
+                    <div class="fcu-buttons">
+                        <div class="fcu-btn-row">
+                            <button class="fcu-btn" v-on:click="fcuPost('ap1')">AP 1</button>
+                            <button class="fcu-btn" v-on:click="fcuPost('ap2')">AP 2</button>
+                            <button class="fcu-btn fcu-btn-wide" v-on:click="fcuPost('athr')">A/THR</button>
+                        </div>
+                        <div class="fcu-btn-row">
+                            <button class="fcu-btn" v-on:click="fcuPost('loc')">LOC</button>
+                            <button class="fcu-btn fcu-btn-amber" v-on:click="fcuPost('appr')">APPR</button>
+                            <button class="fcu-btn" v-on:click="fcuPost('exped')">EXPED</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ MCDU panel ============
+                 Mirrors the FlyByWire MCDU (Captain's side, left). Requires SimBridge
+                 to be enabled + running. Shows a live coloured copy of the FMC screen. -->
+            <div class="mcdu-tab" v-show="hasMcdu && !mcduOpen" v-on:click="mcduOpen = true" title="Open MCDU">
+                <span class="material-icons">developer_board</span>
+                <span>MCDU</span>
+            </div>
+            <div class="mcdu-panel" :class="{ open: mcduOpen }">
+                <div class="mcdu-head">
+                    <span class="material-icons">developer_board</span>
+                    <h2>MCDU <span class="mcdu-side">CAPT</span></h2>
+                    <button class="mcdu-close" v-on:click="mcduOpen = false" title="Hide MCDU">
+                        <span class="material-icons">close</span>
+                    </button>
+                </div>
+                <div class="mcdu-screen" v-if="mcdu && mcdu.left">
+                    <div class="mcdu-title-row">
+                        <span class="mcdu-cell mcdu-cell-l" v-html="renderMcdu(mcdu.left.titleLeft)"></span>
+                        <span class="mcdu-cell mcdu-cell-c mcdu-title" v-html="renderMcdu(mcdu.left.title)"></span>
+                        <span class="mcdu-cell mcdu-cell-r" v-html="renderMcdu(mcdu.left.page)"></span>
+                    </div>
+                    <div class="mcdu-rows">
+                        <div v-for="(line, i) in mcdu.left.lines" :key="i" class="mcdu-row">
+                            <span class="mcdu-cell mcdu-cell-l" v-html="renderMcdu(line[0])"></span>
+                            <span class="mcdu-cell mcdu-cell-c" v-html="renderMcdu(line[1])"></span>
+                            <span class="mcdu-cell mcdu-cell-r" v-html="renderMcdu(line[2])"></span>
+                        </div>
+                    </div>
+                    <div class="mcdu-scratchpad" v-html="renderMcdu(mcdu.left.scratchpad)"></div>
+                </div>
+                <div class="mcdu-offline" v-else>
+                    <span class="material-icons" style="font-size: 32px;">cloud_off</span>
+                    <p>MCDU offline.</p>
+                    <p class="mcdu-hint">{{ mcduOfflineHint }}</p>
+                </div>
+            </div>
+
+            <!-- Alerts modal (unchanged behaviour) -->
+            <div id="overlay" class="absolute inset-0 h-full w-full flex bg-gray-500 bg-opacity-50 justify-center items-center" v-on:click.self="showAlerts = false" v-if="showAlerts">
+                <div class="bg-white w-full max-w-md rounded shadow-lg">
+                    <h2 class="text-2xl text-gray-200 bg-gray-800 pl-4 py-3 rounded-t">Alerts</h2>
+                    <div class="p-4">
+                        <h3 class="text-lg text-gray-800 mb-2">Create a new alert</h3>
+                        <div class="flex">
+                            <div class="inline-block relative w-1/3">
+                                <select class="w-full block appearance-none bg-white border border-gray-400 hover:border-gray-500 px-2 py-2 rounded shadow leading-tight focus:outline-none text-sm cursor-pointer" v-model="alertForm.property">
+                                    <option value="elapsed">Elapsed time</option>
+                                    <option value="ete">ETE</option>
+                                    <option value="wp">WP Distance</option>
+                                    <option value="airspeed">Airspeed</option>
+                                    <option value="altitude">Altitude</option>
+                                    <option value="fuel">Fuel</option>
+                                </select>
+                            </div>
+                            <div class="inline-block relative w-1/3 mx-3">
+                                <select class="w-full block appearance-none bg-white border border-gray-400 hover:border-gray-500 px-2 py-2 rounded shadow leading-tight focus:outline-none text-sm cursor-pointer" v-model="alertForm.operator">
+                                    <option value="equals">equals</option>
+                                    <option value="less" v-if="alertForm.property !== 'elapsed'">is less than</option>
+                                    <option value="greater" v-if="alertForm.property !== 'elapsed'">is greater than</option>
+                                </select>
+                            </div>
+                            <input v-if="alertForm.property === 'elapsed' || alertForm.property === 'ete'" type="text" pattern="[0-9]{2}:[0-9]{2}:[0-9]{2}" placeholder="##:##:##" class="bg-white border border-gray-400 hover:border-gray-500 px-2 rounded shadow leading-tight focus:outline-none text-sm w-1/3" v-model="alertForm.value" />
+                            <input v-else type="number" class="bg-white border border-gray-400 hover:border-gray-500 px-2 rounded shadow leading-tight focus:outline-none text-sm w-1/3" v-model="alertForm.value" />
+                        </div>
+                        <p class="text-sm text-orange-600 mt-1 ml-1 text-right" v-if="alertForm.property === 'elapsed' || alertForm.property === 'ete'">Value must be specified in hh:mm:ss</p>
+                        <div class="flex justify-end items-center mt-4">
+                            <p class="text-blue-500 hover:text-blue-800 cursor-pointer mr-5" v-on:click="showAlerts = false">Cancel</p>
+                            <button type="button" class="bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded font-bold disabled:opacity-75" v-bind:disabled="!alertForm.value" v-on:click="saveAlert">Save</button>
+                        </div>
+                    </div>
+                    <div class="p-4">
+                        <h3 class="text-lg text-gray-800 mb-2">Current Alerts</h3>
+                        <ul v-if="alerts.length > 0">
+                            <li v-for="alert in alerts" class="flex justify-between text-sm border border-gray-400 rounded p-3 mb-1">{{ alert.name }} <span class="text-red-600 cursor-pointer" v-on:click="removeAlert(alert)">Delete</span></li>
                         </ul>
+                        <p v-else class="text-sm">You have no alerts configured</p>
                     </div>
-                </div>
-            </div>
-        </div>
-        <div id="overlay" class="absolute inset-0 h-full w-full flex bg-gray-500 bg-opacity-50 justify-center items-center" v-on:click.self="showAlerts = false" v-if="showAlerts">
-            <div class="bg-white w-full max-w-md rounded shadow-lg">
-                <h2 class="text-2xl text-gray-200 bg-gray-800 pl-4 py-3 rounded-t">Alerts</h2>
-                <div class="p-4">
-                    <h3 class="text-lg text-gray-800 mb-2">Create a new alert</h3>
-                    <div class="flex">
-                        <div class="inline-block relative w-1/3">
-                            <select class="w-full block appearance-none bg-white border border-gray-400 hover:border-gray-500 px-2 py-2 rounded shadow leading-tight focus:outline-none text-sm cursor-pointer" v-model="alertForm.property">
-                                <option value="elapsed">Elapsed time</option>
-                                <option value="ete">ETE</option>
-                                <option value="wp">WP Distance</option>
-                                <option value="airspeed">Airspeed</option>
-                                <option value="altitude">Altitude</option>
-                                <option value="fuel">Fuel</option>
-                            </select>
-                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-                                <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" /></svg>
-                            </div>
-                        </div>
-                        <div class="inline-block relative w-1/3 mx-3">
-                            <select class="w-full block appearance-none bg-white border border-gray-400 hover:border-gray-500 px-2 py-2 rounded shadow leading-tight focus:outline-none text-sm cursor-pointer" v-model="alertForm.operator">
-                                <option value="equals">equals</option>
-                                <option value="less" v-if="alertForm.property !== 'elapsed'">is less than</option>
-                                <option value="greater"v-if="alertForm.property !== 'elapsed'">is greater than</option>
-                            </select>
-                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-                                <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" /></svg>
-                            </div>
-                        </div>
-                        <input v-if="alertForm.property === 'elapsed' || alertForm.property === 'ete'" type="text" pattern="[0-9]{2}:[0-9]{2}:[0-9]{2}" placeholder="##:##:##" name="name" class="bg-white border border-gray-400 hover:border-gray-500 px-2 rounded shadow leading-tight focus:outline-none text-sm w-1/3" v-model="alertForm.value" />
-                        <input v-else type="number" name="name" class="bg-white border border-gray-400 hover:border-gray-500 px-2 rounded shadow leading-tight focus:outline-none text-sm w-1/3" v-model="alertForm.value" />
-                    </div>
-                    <p class="text-sm text-orange-600 mt-1 ml-1 text-right" v-if="alertForm.property === 'elapsed' || alertForm.property === 'ete'">Value must be specified in hh:mm:ss</p>
-                    <div class="flex justify-end items-center mt-4">
-                        <p class="text-blue-500 hover:text-blue-800 cursor-pointer mr-5" v-on:click="showAlerts = false">Cancel</p>
-                        <button type="button" class="bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded font-bold disabled:opacity-75" v-bind:disabled="!alertForm.value" v-on:click="saveAlert">Save</button>
-                    </div>
-                </div>
-                <div class="p-4">
-                    <h3 class="text-lg text-gray-800 mb-2">Current Alerts</h3>
-                    <ul v-if="alerts.length > 0">
-                        <li v-for="alert in alerts" class="flex justify-between text-sm border border-gray-400 rounded p-3 mb-1">{{ alert.name }} <span class="text-red-600 cursor-pointer" v-on:click="removeAlert(alert)">Delete</span></li>
-                    </ul>
-                    <p v-else class="text-sm">You have no alerts configured</p>
                 </div>
             </div>
         </div>

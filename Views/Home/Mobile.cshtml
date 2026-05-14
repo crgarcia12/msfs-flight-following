@@ -1,0 +1,283 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#0b0f1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>MSFS · Remote</title>
+    <link rel="icon" type="image/svg+xml" href="~/favicon.svg">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" crossorigin="" />
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="~/css/mobile.css" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js" crossorigin=""></script>
+    <script src="~/js/leaflet.rotatedMarker.js"></script>
+</head>
+<body>
+<div id="app" :class="{ 'srs-alert': srsActive }">
+
+    <!-- ============ TOP STATUS BAR ============ -->
+    <header class="top">
+        <div class="conn">
+            <span class="dot" :class="connClass"></span>
+            <span class="conn-text">{{ connText }}</span>
+        </div>
+        <div class="phase">{{ phase }}</div>
+        <a href="/" class="desk-link" title="Desktop view">
+            <span class="material-icons">desktop_windows</span>
+        </a>
+    </header>
+
+    <!-- ============ FMA / SRS BANNER ============ -->
+    <div class="fma" v-if="hasFma" :class="{ 'fma-srs': srsActive }">
+        <div class="fma-cell">
+            <div class="fma-active fma-athr" :class="{ 'fma-athr-active': ac.fmaAthrActive }">{{ ac.fmaAthr || '—' }}</div>
+            <div class="fma-armed">{{ ac.fmaAthrArmed && !ac.fmaAthrActive ? 'ARM' : '' }}</div>
+        </div>
+        <div class="fma-cell">
+            <div class="fma-active">{{ ac.fmaPitch || '—' }}</div>
+            <div class="fma-armed">{{ ac.fmaPitchArmed }}</div>
+        </div>
+        <div class="fma-cell">
+            <div class="fma-active">{{ ac.fmaRoll || '—' }}</div>
+            <div class="fma-armed">{{ ac.fmaRollArmed }}</div>
+        </div>
+        <div v-if="ac.a32nxTdReached" class="td-pill" title="Top of descent reached">
+            <span class="material-icons">south_east</span>
+            T/D
+        </div>
+        <button v-if="srsActive" class="recover" v-on:click="recoverAltitude">
+            <span class="material-icons">vertical_align_center</span>
+            RECOVER ALT
+        </button>
+        <button class="descend" v-on:click="beginDescent" title="Set FCU ALT lower and start managed descent">
+            <span class="material-icons">arrow_downward</span>
+            DESCEND
+        </button>
+    </div>
+
+    <!-- AP / FD / A/THR engagement pills + plain-English status -->
+    <div class="ap-bar" v-if="connected">
+        <div class="ap-pills">
+            <span class="ap-pill" :class="{ on: ac.a32nxAp1 }">AP1</span>
+            <span class="ap-pill" :class="{ on: ac.a32nxAp2 }">AP2</span>
+            <span class="ap-pill" :class="{ on: ac.autopilot && ac.autopilot.flightDirector }">FD</span>
+            <span class="ap-pill" :class="{ on: ac.fmaAthrActive, arm: ac.fmaAthrArmed && !ac.fmaAthrActive }">A/THR</span>
+        </div>
+        <div class="ap-summary">
+            <span class="material-icons">{{ apSummaryIcon }}</span>
+            <span>{{ apSummary }}</span>
+        </div>
+    </div>
+
+    <!-- ============ TAB CONTENT ============ -->
+    <main class="content">
+
+        <!-- ---------- FLIGHT TAB ---------- -->
+        <section v-show="tab === 'flight'" class="tab-flight">
+            <div class="tiles">
+                <div class="tile big">
+                    <div class="tile-label">ALT</div>
+                    <div class="tile-value">{{ altDisplay.value }}</div>
+                    <div class="tile-sub">{{ altDisplay.unit }}</div>
+                </div>
+                <div class="tile">
+                    <div class="tile-label">IAS</div>
+                    <div class="tile-value">{{ fmt(ac.airspeedIndicated, 0) }}</div>
+                    <div class="tile-sub">kt</div>
+                </div>
+                <div class="tile">
+                    <div class="tile-label">HDG</div>
+                    <div class="tile-value">{{ String(Math.round(ac.trueHeading || 0) % 360).padStart(3,'0') }}</div>
+                    <div class="tile-sub">°</div>
+                </div>
+                <div class="tile" :class="{ 'tile-up': (ac.verticalSpeedFpm||0) > 50, 'tile-dn': (ac.verticalSpeedFpm||0) < -50 }">
+                    <div class="tile-label">V/S</div>
+                    <div class="tile-value">{{ (ac.verticalSpeedFpm||0) > 0 ? '+' : '' }}{{ fmt(ac.verticalSpeedFpm, 0) }}</div>
+                    <div class="tile-sub">fpm</div>
+                </div>
+                <div class="tile">
+                    <div class="tile-label">GS</div>
+                    <div class="tile-value">{{ fmt(ac.groundSpeedKnots, 0) }}</div>
+                    <div class="tile-sub">kt</div>
+                </div>
+                <div class="tile">
+                    <div class="tile-label">FUEL</div>
+                    <div class="tile-value">{{ fuelPct }}</div>
+                    <div class="tile-sub">%</div>
+                </div>
+            </div>
+
+            <div class="row-tiles">
+                <div class="row-tile">
+                    <span class="material-icons">air</span>
+                    <span>{{ wind }}</span>
+                </div>
+                <div class="row-tile">
+                    <span class="material-icons">device_thermostat</span>
+                    <span>{{ oat }}</span>
+                </div>
+                <div class="row-tile" v-if="ac.gpsWaypointModeActive">
+                    <span class="material-icons">flag</span>
+                    <span>{{ fmt(ac.gpsWaypointDistance/1852, 1) }} nm</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---------- MAP TAB ---------- -->
+        <section v-show="tab === 'map'" class="tab-map">
+            <div id="map"></div>
+            <div class="map-overlay">
+                <span>{{ fmt(ac.latitude, 4) }}, {{ fmt(ac.longitude, 4) }}</span>
+            </div>
+        </section>
+
+        <!-- ---------- FCU TAB ---------- -->
+        <section v-show="tab === 'fcu'" class="tab-fcu" :class="{ 'fcu-read-only': !simWriteEnabled }">
+            <div class="fcu-airframes">A32NX&nbsp;·&nbsp;A330 (Headwind)</div>
+            <div v-if="!simWriteEnabled" class="fcu-readonly-banner">
+                <span class="material-icons">lock</span>
+                <div>
+                    <strong>READ-ONLY</strong>
+                    <div class="hint">Controls disabled. Set <code>Features.Sim.WriteEnabled = true</code> in <code>appsettings.json</code> and restart.</div>
+                </div>
+            </div>
+
+            <!-- SPD knob -->
+            <div class="knob">
+                <div class="knob-head"><span class="knob-label">SPD</span><span class="knob-value">{{ fcu.spd }}</span></div>
+                <div class="stepper">
+                    <button v-on:click="step('spd',-10)">−10</button>
+                    <button v-on:click="step('spd',-1)">−1</button>
+                    <button v-on:click="step('spd',+1)">+1</button>
+                    <button v-on:click="step('spd',+10)">+10</button>
+                </div>
+                <div class="pp">
+                    <button v-on:click="post('spd/pull')">PULL</button>
+                    <button v-on:click="post('spd/push')">PUSH</button>
+                </div>
+            </div>
+
+            <!-- HDG knob -->
+            <div class="knob">
+                <div class="knob-head"><span class="knob-label">HDG</span><span class="knob-value">{{ String(fcu.hdg).padStart(3,'0') }}</span></div>
+                <div class="stepper">
+                    <button v-on:click="step('hdg',-10)">−10</button>
+                    <button v-on:click="step('hdg',-1)">−1</button>
+                    <button v-on:click="step('hdg',+1)">+1</button>
+                    <button v-on:click="step('hdg',+10)">+10</button>
+                </div>
+                <div class="pp">
+                    <button v-on:click="post('hdg/pull')">PULL</button>
+                    <button v-on:click="post('hdg/push')">PUSH</button>
+                </div>
+            </div>
+
+            <!-- ALT knob -->
+            <div class="knob">
+                <div class="knob-head">
+                    <span class="knob-label">ALT</span>
+                    <button class="mini" :class="{ active: fcu.altStep === 1000 }"
+                            v-on:click="fcu.altStep = fcu.altStep === 1000 ? 100 : 1000">{{ fcu.altStep }}</button>
+                    <span class="knob-value">{{ fcu.alt }}</span>
+                </div>
+                <div class="stepper">
+                    <button v-on:click="step('alt',-fcu.altStep*10)">−{{ fcu.altStep*10 }}</button>
+                    <button v-on:click="step('alt',-fcu.altStep)">−{{ fcu.altStep }}</button>
+                    <button v-on:click="step('alt',+fcu.altStep)">+{{ fcu.altStep }}</button>
+                    <button v-on:click="step('alt',+fcu.altStep*10)">+{{ fcu.altStep*10 }}</button>
+                </div>
+                <div class="pp">
+                    <button v-on:click="post('alt/pull')">PULL</button>
+                    <button v-on:click="post('alt/push')">PUSH</button>
+                </div>
+            </div>
+
+            <!-- V/S knob -->
+            <div class="knob">
+                <div class="knob-head"><span class="knob-label">V/S</span><span class="knob-value">{{ fcu.vs > 0 ? '+'+fcu.vs : fcu.vs }}</span></div>
+                <div class="stepper">
+                    <button v-on:click="step('vs',-500)">−500</button>
+                    <button v-on:click="step('vs',-100)">−100</button>
+                    <button v-on:click="step('vs',+100)">+100</button>
+                    <button v-on:click="step('vs',+500)">+500</button>
+                </div>
+                <div class="pp">
+                    <button v-on:click="post('vs/pull')">PULL</button>
+                    <button v-on:click="post('vs/push')">PUSH</button>
+                </div>
+            </div>
+
+            <!-- Buttons -->
+            <div class="btn-grid">
+                <button class="ap" v-on:click="post('ap1')">AP 1</button>
+                <button class="ap" v-on:click="post('ap2')">AP 2</button>
+                <button class="ap wide" v-on:click="post('athr')">A/THR</button>
+                <button class="md" v-on:click="post('loc')">LOC</button>
+                <button class="md amber" v-on:click="post('appr')">APPR</button>
+                <button class="md" v-on:click="post('exped')">EXPED</button>
+            </div>
+        </section>
+
+        <!-- ---------- MCDU TAB ---------- -->
+        <section v-show="tab === 'mcdu'" class="tab-mcdu">
+            <div class="mcdu-sub">
+                <span>FlyByWire MCDU · {{ mcduSide.toUpperCase() }}</span>
+                <button class="mcdu-toggle" v-on:click="mcduSide = mcduSide === 'left' ? 'right' : 'left'">
+                    <span class="material-icons">swap_horiz</span>
+                    {{ mcduSide === 'left' ? 'F/O' : 'CAPT' }}
+                </button>
+            </div>
+            <div class="mcdu-screen" v-if="mcdu && mcdu[mcduSide]">
+                <div class="mcdu-title-row">
+                    <span class="mcdu-cell mcdu-cell-l" v-html="renderMcdu(mcdu[mcduSide].titleLeft)"></span>
+                    <span class="mcdu-cell mcdu-cell-c mcdu-title" v-html="renderMcdu(mcdu[mcduSide].title)"></span>
+                    <span class="mcdu-cell mcdu-cell-r" v-html="renderMcdu(mcdu[mcduSide].page)"></span>
+                </div>
+                <div class="mcdu-rows">
+                    <div v-for="(line, i) in mcdu[mcduSide].lines" :key="i" class="mcdu-row">
+                        <span class="mcdu-cell mcdu-cell-l" v-html="renderMcdu(line[0])"></span>
+                        <span class="mcdu-cell mcdu-cell-c" v-html="renderMcdu(line[1])"></span>
+                        <span class="mcdu-cell mcdu-cell-r" v-html="renderMcdu(line[2])"></span>
+                    </div>
+                </div>
+                <div class="mcdu-scratchpad" v-html="renderMcdu(mcdu[mcduSide].scratchpad)"></div>
+            </div>
+            <div class="mcdu-offline" v-else>
+                <span class="material-icons" style="font-size: 36px;">cloud_off</span>
+                <p>MCDU offline.</p>
+                <p class="mcdu-hint">{{ mcduOfflineHint }}</p>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ============ BOTTOM TAB BAR ============ -->
+    <nav class="tabs">
+        <button :class="{ active: tab==='flight' }" v-on:click="tab='flight'">
+            <span class="material-icons">speed</span>
+            <span>Flight</span>
+        </button>
+        <button :class="{ active: tab==='map' }" v-on:click="tab='map'; $nextTick(setupMap)">
+            <span class="material-icons">map</span>
+            <span>Map</span>
+        </button>
+        <button :class="{ active: tab==='fcu' }" v-on:click="tab='fcu'">
+            <span class="material-icons">tune</span>
+            <span>FCU</span>
+        </button>
+        <button :class="{ active: tab==='mcdu' }" v-on:click="tab='mcdu'">
+            <span class="material-icons">developer_board</span>
+            <span>MCDU</span>
+        </button>
+    </nav>
+
+</div>
+
+<script src="~/js/signalr/dist/browser/signalr.min.js"></script>
+<script src="~/js/mobile.js" type="text/javascript"></script>
+</body>
+</html>

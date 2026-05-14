@@ -1,59 +1,83 @@
-﻿using MSFSFlightFollowing.Models;
+using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using MSFSFlightFollowing.AgentsCore;
 
-namespace MSFSFlightFollowing;
+namespace MSFSFlightFollowing.Agents;
 
-public class Comms : AgentBase
+/// <summary>
+/// Communications agent. Owns two roles:
+/// <list type="bullet">
+///   <item>The scripted "Stuttgart is closed" demo trigger (above 7 000 ft for 5 s).</item>
+///   <item>VATSIM awareness — announces when a new controller comes into range,
+///         and reads back the destination ATIS letter whenever it updates.</item>
+/// </list>
+/// </summary>
+public sealed class Comms : AgentBase
 {
-    Stopwatch _watchDeviation;
-    bool initiated = false;
+    private const double TriggerAltitudeFt = 7_000;
+    private static readonly TimeSpan StableFor = TimeSpan.FromSeconds(5);
 
-    public Comms(AgentManager agentManager) : base(agentManager, nameof(Comms))
+    private IDisposable? _snapshotSub;
+    private Stopwatch? _stableSince;
+    private bool _firedScenario;
+
+    public Comms(AgentContext ctx) : base(ctx, nameof(Comms))
     {
-        _agentManager.SimBridgeClient.Connect();
+        if (!ctx.AgentsEnabled) return;
+        _snapshotSub = Bus.Subscribe<AircraftSnapshot>(OnSnapshotAsync);
+        Bus.Subscribe<NearbyControllersChanged>(OnVatsimChangedAsync);
+        Bus.Subscribe<AtisUpdated>(OnAtisUpdatedAsync);
     }
 
-    public override async Task ProcessEvent(AgentEvent agentEvent)
+    private async Task OnSnapshotAsync(AircraftSnapshot snap)
     {
-        if (initiated)
+        if (_firedScenario) return;
+
+        if (snap.Aircraft.Altitude < TriggerAltitudeFt)
         {
-            return;
-        }
-        if (agentEvent.EventType != EventType.AircraftDataUpdated)
-        {
+            _stableSince = null;
             return;
         }
 
-        var clientData = (ClientData)agentEvent.Data;
-        double altitude = clientData.Data.Altitude;
-        if (altitude < 7000)
+        _stableSince ??= Stopwatch.StartNew();
+        if (_stableSince.Elapsed < StableFor) return;
+
+        _firedScenario = true;
+        _snapshotSub?.Dispose();
+        _snapshotSub = null;
+
+        await Bus.PublishAsync(new AtcMessage("ATC: Stuttgart airport is closed due to bad weather!"));
+        await SayAsync("Validate new route", pilotResponse: "Landing at Zurich");
+    }
+
+    private async Task OnVatsimChangedAsync(NearbyControllersChanged msg)
+    {
+        // Voice-style callouts for every controller that just came into range —
+        // skip ATIS stations because we'll read those separately on the AtisUpdated event.
+        foreach (var c in msg.Entered)
         {
-            return;
+            if (string.Equals(c.FacilityShort, "ATIS", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            await SayAsync($"{c.Callsign} ({c.FacilityShort}) in range on {c.Frequency} — {c.DistanceNm:0.#} NM");
         }
-        if (_watchDeviation == null)
+    }
+
+    private Task OnAtisUpdatedAsync(AtisUpdated msg)
+    {
+        // Read the first non-empty line of the ATIS as a quick callout.
+        // The full text is available on the UI panel for the pilot to read at leisure.
+        var firstLine = "";
+        foreach (var line in msg.Text.Split('\n'))
         {
-            _watchDeviation = Stopwatch.StartNew();
-            return;
-        }
-        if (_watchDeviation.ElapsedMilliseconds < 5000)
-        {
-            return;
+            var trimmed = line.Trim();
+            if (trimmed.Length > 0) { firstLine = trimmed; break; }
         }
 
-        initiated = true;
-        await _agentManager.SendEventAsync(new AgentEvent(this)
-        {
-            EventType = EventType.AtcComm,
-            FrontEndMessage = $"ATC: Stuttgart airport is closed due to bad weather!",
-            CopilotCommand = "Checked"
-        });
-
-        await _agentManager.SendEventAsync(new AgentEvent(this)
-        {
-            EventType = EventType.CopilotCommand,
-            FrontEndMessage = $"Validate new route",
-            CopilotCommand = "Landing at Zurich"
-        });
+        var summary = string.IsNullOrEmpty(firstLine)
+            ? $"{msg.Callsign} information {msg.AtisCode} now current"
+            : $"{msg.Callsign} information {msg.AtisCode}: {firstLine}";
+        return SayAsync(summary);
     }
 }

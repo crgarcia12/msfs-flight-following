@@ -5,6 +5,7 @@
     <OutputType>Exe</OutputType>
     <UserSecretsId>e55d4d98-4817-4bb8-8b6e-395957112d70</UserSecretsId>
     <IsTransformWebConfigDisabled>true</IsTransformWebConfigDisabled>
+    <Nullable>annotations</Nullable>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x86'">
     <PlatformTarget>x64</PlatformTarget>
@@ -15,14 +16,6 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <PlatformTarget>AnyCPU</PlatformTarget>
   </PropertyGroup>
-  <ItemGroup>
-    <COMReference Include="{bed7f4ea-1a96-11d2-8f08-00a0c9a6186d}">
-      <Guid>bed7f4ea-1a96-11d2-8f08-00a0c9a6186d</Guid>
-      <VersionMajor>2</VersionMajor>
-      <VersionMinor>4</VersionMinor>
-      <WrapperTool>tlbimp</WrapperTool>
-    </COMReference>
-  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Azure.Identity" Version="1.13.1" />
     <PackageReference Include="Azure.Messaging.EventHubs" Version="5.11.5" />
@@ -58,7 +51,8 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Microsoft.FlightSimulator.SimConnect">
-      <HintPath>..\..\..\..\MSFS SDK\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
+      <HintPath>Microsoft.FlightSimulator.SimConnect.dll</HintPath>
+      <Private>true</Private>
     </Reference>
   </ItemGroup>
   <ItemGroup>

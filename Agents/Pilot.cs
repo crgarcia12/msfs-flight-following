@@ -1,28 +1,36 @@
-﻿using MSFSFlightFollowing.Models;
 using System.Threading.Tasks;
+using MSFSFlightFollowing.AgentsCore;
 
-namespace MSFSFlightFollowing;
+namespace MSFSFlightFollowing.Agents;
 
-public class Pilot : AgentBase
+/// <summary>
+/// Plays the role of the human pilot: when a <see cref="ChecklistCallout"/>
+/// includes an expected pilot response, the Pilot echoes it ~1 s later so the
+/// timeline reads as a real back-and-forth.
+/// The 1 s delay runs fire-and-forget so it never blocks bus delivery.
+/// </summary>
+public sealed class Pilot : AgentBase
 {
-    bool crossed3kasc = false;
-    bool crossed3desc = false;
+    private const int EchoDelayMs = 1000;
 
-
-    public Pilot(AgentManager agentManager) : base(agentManager, nameof(Pilot))
+    public Pilot(AgentContext ctx) : base(ctx, nameof(Pilot))
     {
+        if (!ctx.AgentsEnabled) return;
+        Bus.Subscribe<ChecklistCallout>(OnCallout);
     }
 
-    public override async Task ProcessEvent(AgentEvent agentEvent)
+    private Task OnCallout(ChecklistCallout callout)
     {
-        if (agentEvent.EventType == EventType.CopilotCommand)
+        // Ignore my own echoes and callouts that don't request a response.
+        if (callout.Agent == AgentName) return Task.CompletedTask;
+        if (string.IsNullOrWhiteSpace(callout.PilotResponse)) return Task.CompletedTask;
+
+        var response = callout.PilotResponse;
+        _ = Task.Run(async () =>
         {
-            await Task.Delay(1000);
-            await _agentManager.SendEventAsync(new AgentEvent(this)
-            {
-                EventType = EventType.NotifyFrontEnd,
-                FrontEndMessage = agentEvent.CopilotCommand
-            });
-        }
+            await Task.Delay(EchoDelayMs);
+            await SayAsync(response);
+        });
+        return Task.CompletedTask;
     }
 }

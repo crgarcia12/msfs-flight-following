@@ -3,15 +3,56 @@ using System.Collections.Generic;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using static System.Runtime.InteropServices.JavaScript.JSType;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using MSFSFlightFollowing.AgentsCore;
+using MSFSFlightFollowing.Models;
 
 namespace MSFSFlightFollowing;
 
-public class SimBridgeClient
+public class SimBridgeClient : ISimBridgeMcdu
 {
+    private readonly FeatureOptions _features;
+    private readonly ILogger<SimBridgeClient> _logger;
+
+    public bool Enabled => _features.SimBridge.Enabled;
+    public bool IsConnected { get; private set; }
+
+    /// <summary>
+    /// Connection state surfaced to the UI so it can show a precise hint:
+    /// <list type="bullet">
+    ///   <item><c>Disabled</c> — feature flag is off.</item>
+    ///   <item><c>Connecting</c> — feature on, WebSocket not yet established.</item>
+    ///   <item><c>AwaitingAircraft</c> — WebSocket up, but no MCDU frame has arrived
+    ///     (FBW / Headwind aircraft not loaded, or <c>CONFIG_SIMBRIDGE_ENABLED</c>
+    ///     persistent setting is off in the cockpit MCDU).</item>
+    ///   <item><c>Streaming</c> — at least one MCDU frame received.</item>
+    /// </list>
+    /// </summary>
+    public SimBridgeStatus Status { get; private set; } = SimBridgeStatus.Disabled;
+
+    /// <summary>
+    /// Latest MCDU snapshot from FlyByWire SimBridge, including FBW color tags
+    /// (<c>{white}</c>, <c>{cyan}</c>, <c>{green}</c>, <c>{amber}</c>, <c>{magenta}</c>,
+    /// <c>{small}</c>, <c>{big}</c>, <c>{sp}</c>, <c>{end}</c>) so the front-end can
+    /// render the display in colour. Returns <c>null</c> if not connected.
+    /// </summary>
+    public FmcRoot? CurrentScreen
+    {
+        get
+        {
+            lock (fmcRootLock) { return _root; }
+        }
+    }
+
+    public SimBridgeClient(IOptions<FeatureOptions> features, ILogger<SimBridgeClient> logger)
+    {
+        _features = features.Value;
+        _logger = logger;
+    }
+
     object fmcRootLock = new object();
 
     FmcRoot _root = null;
@@ -37,25 +78,26 @@ public class SimBridgeClient
 
     ClientWebSocket ws;
 
-    private string RemoveTags(string receivedMessage)
+    /// <summary>
+    /// Strips the FBW MCDU color/format tags from a string so it can be matched
+    /// against plain text (used by the automation methods). The wire payload sent
+    /// to the front-end keeps the tags so it can render in colour.
+    /// </summary>
+    public static string StripTags(string? s)
     {
-        receivedMessage = receivedMessage.Replace("{end}", "");
-
-        receivedMessage = receivedMessage.Replace("{white}", "");
-        receivedMessage = receivedMessage.Replace("{cyan}", "");
-        receivedMessage = receivedMessage.Replace("{green}", "");
-        receivedMessage = receivedMessage.Replace("{amber}", "");
-        receivedMessage = receivedMessage.Replace("{magenta}", "");
-
-        receivedMessage = receivedMessage.Replace("{small}", "");
-        receivedMessage = receivedMessage.Replace("{big}", "");
-
-        receivedMessage = receivedMessage.Replace("{sp}", "");
-
-        receivedMessage = receivedMessage.Replace("{right}", "");
-        receivedMessage = receivedMessage.Replace("{left}", "");
-
-        return receivedMessage;
+        if (string.IsNullOrEmpty(s)) return s ?? string.Empty;
+        return s
+            .Replace("{end}", "")
+            .Replace("{white}", "")
+            .Replace("{cyan}", "")
+            .Replace("{green}", "")
+            .Replace("{amber}", "")
+            .Replace("{magenta}", "")
+            .Replace("{small}", "")
+            .Replace("{big}", "")
+            .Replace("{sp}", " ")
+            .Replace("{right}", "")
+            .Replace("{left}", "");
     }
 
     private async Task SendRequestUpdate(ClientWebSocket ws)
@@ -69,61 +111,67 @@ public class SimBridgeClient
     // Every time we press something opn the FMC, the server sends and update (so it is not needed to request an update)
     private async Task ReceiveMessagesAndUpdateRoot(ClientWebSocket ws, bool sendRequestUpdate = true)
     {
-        int retry = 4;
         while (true)
         {
+            // Request update
+            if (sendRequestUpdate)
+            {
+                await Task.Delay(500);
+                sendRequestUpdate = false;
+            }
+
+            // Receive a message from the server
+            var bytesReceived = new ArraySegment<byte>(new byte[40960]);
+            WebSocketReceiveResult result = await ws.ReceiveAsync(bytesReceived, CancellationToken.None);
+
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                _logger.LogInformation("SimBridge closed the connection.");
+                return;
+            }
+
+            string receivedMessage = Encoding.UTF8.GetString(bytesReceived.Array!, 0, result.Count);
+            if (string.IsNullOrEmpty(receivedMessage)) continue;
+
+            // The SimBridge MCDU gateway broadcasts *every* message to every connected
+            // client, so we see a mix of:
+            //   - "mcduConnected"            (aircraft → server handshake echoed back)
+            //   - "requestUpdate"            (another client polling)
+            //   - "event:left:<KEY>" / "event:right:<KEY>"  (our or another panel's keypresses)
+            //   - "print:<json>"             (printer payloads)
+            //   - "update:<json>"            (the actual MCDU frame — what we want)
+            // Anything that isn't an update frame is ignored to avoid JSON parse errors
+            // when the aircraft (or another client) sends control messages.
+            if (!receivedMessage.StartsWith("update:", StringComparison.Ordinal))
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    var preview = receivedMessage.Length > 80 ? receivedMessage.Substring(0, 80) + "..." : receivedMessage;
+                    _logger.LogDebug("SimBridge non-update message ignored: {Msg}", preview);
+                }
+                continue;
+            }
+
             try
             {
-                retry--;
-                // Request update
-                if (sendRequestUpdate)
-                {
-                    //await SendRequestUpdate(ws);
-                    await Task.Delay(500);
-                }
-
-                // Receive a message from the server
-                ArraySegment<byte> bytesReceived = new ArraySegment<byte>(new byte[40960]);
-                WebSocketReceiveResult result = await ws.ReceiveAsync(bytesReceived, CancellationToken.None);
-
-                // The message says update:<json>
-                string receivedMessage = Encoding.UTF8.GetString(bytesReceived.Array, 0, result.Count);
-
-                // if another window is requesting updates, we skip it
-                if (receivedMessage == "requestUpdate" || receivedMessage.StartsWith("event:left") || string.IsNullOrEmpty(receivedMessage))
-                {
-                    sendRequestUpdate = false;
-                    continue;
-                }
-
-                receivedMessage = RemoveTags(receivedMessage);
-                Console.WriteLine("----------- Message Received ------------");
-                Console.WriteLine(receivedMessage);
-                Console.WriteLine("-----------------------------------------");
-                receivedMessage = receivedMessage.Substring(7);
-
-                // The message has tags, like {white} indicating the text color. we remove them
-                FmcRoot fmcRootDTO = JsonSerializer.Deserialize<FmcRoot>(receivedMessage, new JsonSerializerOptions
+                string json = receivedMessage.Substring(7);
+                FmcRoot? fmcRootDTO = JsonSerializer.Deserialize<FmcRoot>(json, new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true
                 });
+                if (fmcRootDTO == null) continue;
 
-                // If there was no exception, then this is the new version of the FMC data object
+                bool first = fmcRootDataObject == null;
                 fmcRootDataObject = fmcRootDTO;
-
-                retry = 4;
-                await Task.Delay(100);
-
+                if (first)
+                {
+                    Status = SimBridgeStatus.Streaming;
+                    _logger.LogInformation("SimBridge MCDU stream started (first frame received).");
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("----------- Message Received ERROR ------------");
-                Console.WriteLine(ex.ToString());
-                Console.WriteLine("(----------------------------------------------");
-                if (retry <= 0)
-                {
-                    throw;
-                }
+                _logger.LogDebug(ex, "SimBridge update parse failed (ignored).");
             }
         }
     }
@@ -157,13 +205,17 @@ public class SimBridgeClient
 
     }
 
+    public async Task ChangeAirportAsync() => await ChangeAirport();
+
     public async Task ChangeAirport()
     {
-        //while (true)
-        //{
-        //try
-        //{
-        while (!string.IsNullOrEmpty(fmcRootDataObject.Left.Scratchpad))
+        if (!Enabled || !IsConnected || ws == null || fmcRootDataObject == null)
+        {
+            _logger.LogInformation("SimBridge ChangeAirport skipped (Enabled={Enabled}, Connected={Connected}).", Enabled, IsConnected);
+            return;
+        }
+
+        while (!string.IsNullOrEmpty(StripTags(fmcRootDataObject.Left.Scratchpad)))
         {
             await Press(ws, "CLR");
             await Task.Delay(1000);
@@ -197,7 +249,7 @@ public class SimBridgeClient
             foreach (List<string> line in fmcRootDataObject.Left.Lines)
             {
                 // There are 3 columns in every row. I am interested in the first one (0)
-                if (!found && line[0].Contains("CF28"))
+                if (!found && StripTags(line[0]).Contains("CF28"))
                 {
                     found = true;
                     int buttonIndex = (index + 1) / 2;
@@ -214,35 +266,64 @@ public class SimBridgeClient
         }
 
         // "scratchpad": "{white}T/D REACHED{end}",
-
-        // Close the WebSocket connection
-        //    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-        //    Console.WriteLine("Connection closed.");
-
-        //}
-        //catch (Exception ex)
-        //{
-        //    Console.WriteLine(ex.ToString());
-        //}
-        //}
     }
 
     public async Task Connect()
     {
-        string message;
-
-        ws = new ClientWebSocket();
-
-        Uri serverUri = new Uri("ws://localhost:8380/interfaces/v1/mcdu");
-        await ws.ConnectAsync(serverUri, CancellationToken.None);
-        await SendRequestUpdate(ws);
-        Task.Run(async () => { await ReceiveMessagesAndUpdateRoot(ws); });
-        Console.WriteLine("Connected!");
-
-        // Wait until FMC is loaded
-        while (fmcVersion == 0)
+        if (!Enabled)
         {
-            await Task.Delay(500);
+            Status = SimBridgeStatus.Disabled;
+            _logger.LogInformation("SimBridge is disabled in configuration; skipping connection.");
+            return;
+        }
+
+        Status = SimBridgeStatus.Connecting;
+
+        try
+        {
+            ws = new ClientWebSocket();
+            Uri serverUri = new Uri(_features.SimBridge.Url);
+            await ws.ConnectAsync(serverUri, CancellationToken.None);
+            await SendRequestUpdate(ws);
+            IsConnected = true;
+            // Until we see an update: frame we treat the aircraft as missing; the
+            // UI uses this to show a "waiting for aircraft" hint instead of a hard
+            // "SimBridge offline" error.
+            Status = SimBridgeStatus.AwaitingAircraft;
+            _logger.LogInformation("SimBridge connected ({Url}). Waiting for first MCDU frame...", _features.SimBridge.Url);
+
+            _ = Task.Run(async () =>
+            {
+                try { await ReceiveMessagesAndUpdateRoot(ws); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("SimBridge receive loop ended: {Message}", ex.Message);
+                }
+                finally
+                {
+                    IsConnected = false;
+                    Status = SimBridgeStatus.Connecting;
+                    lock (fmcRootLock) { _root = null; }
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            IsConnected = false;
+            Status = SimBridgeStatus.Connecting;
+            _logger.LogWarning("SimBridge connection failed ({Url}): {Message}", _features.SimBridge.Url, ex.Message);
         }
     }
+}
+
+/// <summary>
+/// Coarse-grained SimBridge state, sent to the browser so the offline UI can
+/// give the user actionable guidance.
+/// </summary>
+public enum SimBridgeStatus
+{
+    Disabled = 0,
+    Connecting = 1,
+    AwaitingAircraft = 2,
+    Streaming = 3
 }

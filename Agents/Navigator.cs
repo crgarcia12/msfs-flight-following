@@ -1,67 +1,22 @@
-﻿using MSFSFlightFollowing.Models;
-using System;
-using System.Diagnostics;
 using System.Threading.Tasks;
+using MSFSFlightFollowing.AgentsCore;
 
-namespace MSFSFlightFollowing;
+namespace MSFSFlightFollowing.Agents;
 
-public class Navigator : AgentBase
+/// <summary>
+/// Translates a new destination into a concrete approach clearance for the copilot.
+/// </summary>
+public sealed class Navigator : AgentBase
 {
-    bool crossed_10k = false;
-    Stopwatch watchFuel { get; set; } = Stopwatch.StartNew();
-    Stopwatch watchAP { get; set; } = Stopwatch.StartNew();
-
-    public Navigator(AgentManager agentManager) : base(agentManager, nameof(Navigator))
+    public Navigator(AgentContext ctx) : base(ctx, nameof(Navigator))
     {
+        if (!ctx.AgentsEnabled) return;
+        Bus.Subscribe<DestinationAssigned>(OnDestination);
     }
 
-    public override async Task ProcessEvent(AgentEvent agentEvent)
+    private async Task OnDestination(DestinationAssigned msg)
     {
-        if(agentEvent.EventType == EventType.NewDestination)
-        {
-            await _agentManager.SendEventAsync(new AgentEvent(this)
-            {
-                EventType = EventType.LandingRunaway,
-                FrontEndMessage = $"New Destination: ZURICH - Recommend Runaway 28",
-            });
-        }
-        if (agentEvent.EventType == EventType.AircraftDataUpdated)
-        {
-            var clientData = (ClientData)agentEvent.Data;
-
-            if (!crossed_10k && clientData.Data.Altitude > 10000)
-            {
-                crossed_10k = true;
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.NotifyFrontEnd,
-                    FrontEndMessage = $"Crossed 10.000 feet",
-                    CopilotCommand = "Altitude check"
-                });
-            }
-
-            //if (watchFuel.ElapsedMilliseconds > 30000)
-            //{
-            //    watchFuel = Stopwatch.StartNew();
-            //    await _agentManager.SendEventAsync(new AgentEvent(this)
-            //    {
-            //        EventType = EventType.CopilotCommand,
-            //        FrontEndMessage = $"Check Remaining Fuel",
-            //        CopilotCommand = $"Remaining Fuel {Math.Floor(clientData.Data.CurrentFuel)}"
-            //    });
-                
-            //}
-            //if (watchAP.ElapsedMilliseconds > 45000)
-            //{
-            //    watchAP = Stopwatch.StartNew();
-            //    await _agentManager.SendEventAsync(new AgentEvent(this)
-            //    {
-            //        EventType = EventType.CopilotCommand,
-            //        FrontEndMessage = $"Check Autopilot",
-            //        CopilotCommand = $"Autopilot Mode NAV: {clientData.Data.Autopilot.Nav1}"
-            //    });
-            //}
-
-        }
+        await SayAsync($"New Destination: {msg.Icao} — Recommend Runway 28");
+        await Bus.PublishAsync(new ApproachCleared(msg.Icao, "28"));
     }
 }

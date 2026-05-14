@@ -1,113 +1,58 @@
-﻿using Microsoft.Azure.Amqp.Framing;
-using MSFSFlightFollowing.Models;
 using System.Threading.Tasks;
+using MSFSFlightFollowing.AgentsCore;
 
-namespace MSFSFlightFollowing;
+namespace MSFSFlightFollowing.Agents;
 
-public class Copilot : AgentBase
+/// <summary>
+/// Hands the cockpit checklist for the demo flight:
+/// <list type="bullet">
+///   <item>Takeoff clearance once we start rolling.</item>
+///   <item>Lights/autopilot callouts at 3 000 ft and 10 000 ft (both directions).</item>
+///   <item>Descent + MCDU + auto-land script when an approach is cleared.</item>
+/// </list>
+/// All thresholds are detected upstream and arrive as typed messages — the agent
+/// itself holds no altitude state.
+/// </summary>
+public sealed class Copilot : AgentBase
 {
-    bool crossed_10k = false;
-    bool descent_bellow_10k = false;
+    private const int DivertTargetAltitudeFt = 4_000;
 
-    bool crossed_3k = false;
-    bool descent_bellow_3k = false;
-
-    bool start_takeoff = false;
-    public Copilot(AgentManager agentManager) : base(agentManager, nameof(Copilot))
+    public Copilot(AgentContext ctx) : base(ctx, nameof(Copilot))
     {
-
+        if (!ctx.AgentsEnabled) return;
+        Bus.Subscribe<TakeoffStarted>(OnTakeoff);
+        Bus.Subscribe<AltitudeCallout>(OnAltitudeCallout);
+        Bus.Subscribe<ApproachCleared>(OnApproachCleared);
     }
 
-    public override async Task ProcessEvent(AgentEvent agentEvent)
+    private Task OnTakeoff(TakeoffStarted _)
+        => SayAsync("Ready for TakeOff", pilotResponse: "Take Off approved");
+
+    private Task OnAltitudeCallout(AltitudeCallout c) => (c.Feet, c.Ascending) switch
     {
-        if (agentEvent.EventType == EventType.LandingRunaway)
-        {
-            await _agentManager.SendEventAsync(new AgentEvent(this)
-            {
-                EventType = EventType.CopilotCommand,
-                FrontEndMessage = $"Initiate descent for Runaway 28",
-                CopilotCommand = "Initiating descent to 4000 feet"
-            });
-            base._agentManager.SimConnector.StartDecent();
+        (10_000, true)  => SayAsync("Turn lights off",          pilotResponse: "Landing lights off"),
+        (10_000, false) => SayAsync("Turn landing lights on",   pilotResponse: "Landing lights on"),
+        ( 3_000, true)  => SayAsync("Turn on Autopilot",        pilotResponse: "Autopilot ON"),
+        ( 3_000, false) => OnPassing3000Descending(),
+        _ => Task.CompletedTask
+    };
 
-            await _agentManager.SendEventAsync(new AgentEvent(this)
-            {
-                EventType = EventType.CopilotCommand,
-                FrontEndMessage = $"Start configuring Autopilot Computer",
-                CopilotCommand = "Configuring Autopilot computer"
-            });
-            base._agentManager.SimBridgeClient.ChangeAirport();
-            await _agentManager.SendEventAsync(new AgentEvent(this)
-            {
-                EventType = EventType.CopilotCommand,
-                FrontEndMessage = $"Copmputer configured",
-                CopilotCommand = "Check computer configured"
-            });
-        }
+    private async Task OnPassing3000Descending()
+    {
+        await SayAsync("Set landing AP", pilotResponse: "AP auto-landing on");
+        Sim.EngageApproach();
+    }
 
-        if (agentEvent.EventType == EventType.AircraftDataUpdated)
-        {
-            var clientData = (ClientData)agentEvent.Data;
-            double altitude = clientData.Data.Altitude;
-            double airspeed = clientData.Data.AirspeedIndicated;
+    private async Task OnApproachCleared(ApproachCleared msg)
+    {
+        await SayAsync(
+            $"Initiate descent for Runway {msg.Runway}",
+            pilotResponse: $"Initiating descent to {DivertTargetAltitudeFt} feet");
+        Sim.BeginDescent(DivertTargetAltitudeFt);
 
+        await SayAsync("Start configuring Autopilot Computer", pilotResponse: "Configuring Autopilot computer");
+        await Mcdu.ChangeAirportAsync();
 
-            if (!start_takeoff && airspeed > 5)
-            {
-                start_takeoff = true;
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.CopilotCommand,
-                    FrontEndMessage = $"Ready for TakeOff",
-                    CopilotCommand = "Take Off approved"
-                });
-            }
-            /////////////////// 10k
-            if (!crossed_10k && altitude > 10000)
-            {
-                crossed_10k = true;
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.CopilotCommand,
-                    FrontEndMessage = $"Turn lights off",
-                    CopilotCommand = "Landing lights off"
-                });
-            }
-            if (crossed_10k && !descent_bellow_10k && altitude < 10000)
-            {
-                descent_bellow_10k = true;
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.CopilotCommand,
-                    FrontEndMessage = $"Turn landing lights on",
-                    CopilotCommand = "Landing Lights on"
-
-                });
-            }
-
-            /////////////////// 3k
-            if (!crossed_3k && altitude > 3000)
-            {
-                crossed_3k = true;
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.CopilotCommand,
-                    FrontEndMessage = $"Turn on Autopilot",
-                    CopilotCommand = "Autopilot ON"
-                });
-            }
-            if (crossed_3k && !descent_bellow_3k && altitude < 3000)
-            {
-                descent_bellow_3k = true;
-                await _agentManager.SendEventAsync(new AgentEvent(this)
-                {
-                    EventType = EventType.CopilotCommand,
-                    FrontEndMessage = $"Set landing AP",
-                    CopilotCommand = "AP autolading on"
-
-                });
-                base._agentManager.SimConnector.StartApproach();
-            }
-        }
+        await SayAsync("Computer configured", pilotResponse: "Check computer configured");
     }
 }

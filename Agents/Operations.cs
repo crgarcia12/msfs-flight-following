@@ -1,28 +1,25 @@
-﻿using System.Threading.Tasks;
+using System.Threading.Tasks;
+using MSFSFlightFollowing.AgentsCore;
 
-namespace MSFSFlightFollowing;
+namespace MSFSFlightFollowing.Agents;
 
-public class Operations : AgentBase
+/// <summary>
+/// Reacts to an <see cref="AtcMessage"/> by checking alternates and assigning a
+/// new destination on the bus.
+/// </summary>
+public sealed class Operations : AgentBase
 {
-    public Operations(AgentManager agentManager) : base(agentManager, nameof(Operations))
+    public Operations(AgentContext ctx) : base(ctx, nameof(Operations))
     {
+        if (!ctx.AgentsEnabled) return;
+        Bus.Subscribe<AtcMessage>(OnAtc);
     }
 
-    public override async Task ProcessEvent(AgentEvent agentEvent)
+    private async Task OnAtc(AtcMessage msg)
     {
-        if (agentEvent.EventType == EventType.AtcComm)
-        {
-            await _agentManager.SendEventAsync(new AgentEvent(this)
-            {
-                EventType = EventType.NotifyFrontEnd,
-                FrontEndMessage = $"New Flight Plan required. Checking alternates",
-            });
-            await Task.Delay(1000);
-            await _agentManager.SendEventAsync(new AgentEvent(this)
-            {
-                EventType = EventType.NewDestination,
-                FrontEndMessage = $"New Destination: ZURICH",
-            });
-        }
+        await SayAsync("New Flight Plan required. Checking alternates");
+        await Task.Delay(1000);
+        await Bus.PublishAsync(new DestinationAssigned("LSZH"));
+        await SayAsync("New Destination: ZURICH");
     }
 }
