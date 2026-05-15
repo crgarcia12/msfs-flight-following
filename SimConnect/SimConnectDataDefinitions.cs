@@ -110,6 +110,37 @@ internal static class SimConnectDataDefinitions
         // Per-channel AP engagement (FBW reports AP1 / AP2 separately).
         new("L:A32NX_AUTOPILOT_1_ACTIVE",       "bool",             SIMCONNECT_DATATYPE.INT32),
         new("L:A32NX_AUTOPILOT_2_ACTIVE",       "bool",             SIMCONNECT_DATATYPE.INT32),
+
+        // ---- FCU display LVars (FBW A32NX / Headwind A330) -------------------
+        // Selected values + managed/dashes flags so the web UI can mimic the real
+        // cockpit FCU exactly: SPD/MACH window, HDG/TRK window (already covered
+        // by DISPLAY_HDG_TRK_VALUE above), ALT window, V/S-FPA window.
+        new("L:A32NX_AUTOPILOT_SPEED_SELECTED",   "number", SIMCONNECT_DATATYPE.FLOAT64),
+        new("L:A32NX_AUTOPILOT_MACH_SELECTED",    "number", SIMCONNECT_DATATYPE.FLOAT64),
+        new("L:A32NX_FCU_SPD_MANAGED_DOT",        "bool",   SIMCONNECT_DATATYPE.INT32),
+        new("L:A32NX_FCU_SPD_MANAGED_DASHES",     "bool",   SIMCONNECT_DATATYPE.INT32),
+        new("L:A32NX_AUTOPILOT_HEADING_SELECTED", "degrees",SIMCONNECT_DATATYPE.FLOAT64),
+        new("L:A32NX_FCU_HDG_MANAGED_DOT",        "bool",   SIMCONNECT_DATATYPE.INT32),
+        new("L:A32NX_FCU_HDG_MANAGED_DASHES",     "bool",   SIMCONNECT_DATATYPE.INT32),
+        new("L:A32NX_TRK_FPA_MODE_ACTIVE",        "bool",   SIMCONNECT_DATATYPE.INT32),
+        new("L:A32NX_AUTOPILOT_ALTITUDE_SELECTED","feet",   SIMCONNECT_DATATYPE.FLOAT64),
+        new("L:A32NX_FCU_ALT_MANAGED",            "bool",   SIMCONNECT_DATATYPE.INT32),
+        new("L:A32NX_AUTOPILOT_VS_SELECTED",      "feet/minute", SIMCONNECT_DATATYPE.FLOAT64),
+        new("L:A32NX_AUTOPILOT_FPA_SELECTED",     "degrees",SIMCONNECT_DATATYPE.FLOAT64),
+
+        // Generic SimConnect autopilot targets — fallback for non-FBW aircraft so
+        // the FCU display still renders something useful (without the Airbus
+        // managed-mode dots).
+        new("AUTOPILOT AIRSPEED HOLD VAR",        "knots",       SIMCONNECT_DATATYPE.FLOAT64),
+        new("AUTOPILOT HEADING LOCK DIR",         "degrees",     SIMCONNECT_DATATYPE.FLOAT64),
+        new("AUTOPILOT ALTITUDE LOCK VAR",        "feet",        SIMCONNECT_DATATYPE.FLOAT64),
+        new("AUTOPILOT VERTICAL HOLD VAR",        "feet/minute", SIMCONNECT_DATATYPE.FLOAT64),
+
+        // ---- Altimeter (QNH) ------------------------------------------------
+        // Read the pilot-side Kohlsman setting in hPa (millibars) so we can show
+        // the same QNH as the cockpit altimeter and offer a one-tap "sync to
+        // local QNH" button equivalent to MSFS's B key.
+        new("KOHLSMAN SETTING MB",                "millibars",   SIMCONNECT_DATATYPE.FLOAT64),
     };
 
     public static void Register(Microsoft.FlightSimulator.SimConnect.SimConnect simconnect)

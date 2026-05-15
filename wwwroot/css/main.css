@@ -341,6 +341,27 @@ html, body { background: #0b1220; color: #e2e8f0; font-family: 'Inter', system-u
 .status-dot.off     { background: rgba(248,113,113,0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.5); }
 .status-dot.pending { background: rgba(251,191,36,0.15); color: #fcd34d; border: 1px solid rgba(251,191,36,0.5); animation: pulse 1.5s infinite; }
 
+/* "Inside FIR" indicator — appears next to status dots when the aircraft is
+   inside a FIR that has a CTR or FSS controller online. Best-effort only;
+   doesn't claim full sector accuracy. */
+.fir-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    background: rgba(239, 68, 68, 0.18);
+    color: #fecaca;
+    border: 1px solid rgba(239, 68, 68, 0.55);
+    animation: pulse 2s infinite;
+}
+.fir-pill .material-icons { font-size: 11px; line-height: 1; }
+.fir-pill-icao { font-weight: 700; color: #fff; }
+.fir-pill-meta { opacity: 0.85; }
+
 /* Collapse button */
 .hud-collapse {
     position: absolute;
@@ -943,6 +964,135 @@ html, body { background: #0b1220; color: #e2e8f0; font-family: 'Inter', system-u
 .fma-descend:hover { background: linear-gradient(180deg, #0e7490 0%, #155e75 100%); }
 .fma-descend .material-icons { font-size: 16px; }
 
+/* ============ FCU display panel ============
+   Mirrors the cockpit Airbus FCU. Read-only echo of what's actually selected
+   in the SPD/HDG/ALT/V-S windows so you can relate to the cockpit at a glance. */
+.fcu-display {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    margin-left: 12px;
+    margin-top: 4px;
+    padding: 4px 8px;
+    background: linear-gradient(180deg, #1f2937 0%, #111827 100%);
+    border: 1px solid #374151;
+    border-radius: 5px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.fcu-window {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 78px;
+    padding: 3px 8px 8px;
+}
+.fcu-window-alt { min-width: 92px; }
+.fcu-label {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: #9ca3af;
+    margin-bottom: 2px;
+}
+.fcu-value {
+    font-family: 'Share Tech Mono', 'Consolas', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: #fbbf24;            /* Airbus amber-yellow */
+    text-shadow: 0 0 6px rgba(251, 191, 36, 0.45);
+    letter-spacing: 0.04em;
+    line-height: 1;
+}
+.fcu-value.dim { color: #4b5563; text-shadow: none; }
+.fcu-dot {
+    position: absolute;
+    bottom: 1px;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1px solid #4b5563;
+}
+.fcu-dot.on {
+    background: #fbbf24;
+    border-color: #fbbf24;
+    box-shadow: 0 0 6px rgba(251, 191, 36, 0.9);
+}
+.fcu-divider {
+    width: 1px;
+    background: #374151;
+    margin: 4px 2px;
+}
+
+/* QNH window — wider to fit the SYNC button next to the digits. */
+.fcu-window-qnh { min-width: 96px; }
+.fcu-qnh-sync {
+    margin-top: 4px;
+    padding: 2px 8px;
+    background: rgba(34, 211, 238, 0.18);
+    border: 1px solid rgba(34, 211, 238, 0.6);
+    border-radius: 3px;
+    color: #67e8f9;
+    font-family: 'Consolas', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+}
+.fcu-qnh-sync:hover:enabled { background: rgba(34, 211, 238, 0.32); }
+.fcu-qnh-sync:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ============ Quick AP buttons ============ */
+.ap-quick {
+    display: flex;
+    gap: 4px;
+    margin-left: 8px;
+    margin-top: 4px;
+    align-items: stretch;
+}
+.ap-quick-btn {
+    min-width: 52px;
+    padding: 6px 8px;
+    background: rgba(20, 24, 28, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    border-radius: 4px;
+    color: #94a3b8;
+    font-family: 'Consolas', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.ap-quick-btn:hover:enabled {
+    background: rgba(34, 211, 238, 0.12);
+    border-color: #22d3ee;
+    color: #e2eaf3;
+}
+.ap-quick-btn:active:enabled { transform: translateY(1px); }
+.ap-quick-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.ap-quick-btn.on {
+    background: rgba(74, 222, 128, 0.22);
+    border-color: #4ade80;
+    color: #4ade80;
+    box-shadow: 0 0 8px rgba(74, 222, 128, 0.4);
+}
+.ap-quick-btn.arm {
+    background: rgba(251, 191, 36, 0.18);
+    border-color: #fbbf24;
+    color: #fbbf24;
+}
+/* APPR (autoland) is highlighted amber — visual cue this is the high-energy
+   button you want to press carefully on approach. */
+.ap-quick-btn-appr {
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.5);
+}
+.ap-quick-btn-loc {
+    color: #c4b5fd;
+    border-color: rgba(167, 139, 250, 0.5);
+}
+
 /* ============ VATSIM panel (left rail, mirror of agents) ============ */
 .vatsim-tab {
     position: absolute;
@@ -1252,6 +1402,7 @@ html, body { background: #0b1220; color: #e2e8f0; font-family: 'Inter', system-u
     user-select: none;
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
 }
 .mcdu-panel.open { transform: translateX(0); }
 .mcdu-head {
@@ -1334,10 +1485,14 @@ html, body { background: #0b1220; color: #e2e8f0; font-family: 'Inter', system-u
 .mc-g  { color: #4ade80; }
 .mc-a  { color: #fbbf24; }
 .mc-m  { color: #c084fc; }
+.mc-r  { color: #f87171; }
+.mc-y  { color: #fde047; }
+.mc-inop { color: #6b7280; }
 .mc-sm { font-size: 0.75em; }
 .mc-bg { font-size: 1.05em; font-weight: 700; }
 .mc-lt { display: inline-block; text-align: left; }
 .mc-rt { display: inline-block; text-align: right; }
+.mc-ct { display: inline-block; text-align: center; }
 
 .mcdu-offline {
     flex: 1;
@@ -1363,6 +1518,64 @@ html, body { background: #0b1220; color: #e2e8f0; font-family: 'Inter', system-u
     font-family: 'Share Tech Mono', monospace;
 }
 .mcdu-offline a { color: #22d3ee; }
+
+/* ============ MCDU keypad (desktop panel) ============ */
+.mcdu-keys {
+    margin: 8px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.mcdu-keys.mcdu-keys-disabled { opacity: 0.5; pointer-events: none; }
+
+.mcdu-keys .mk-lsk-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.mcdu-keys .mk-grid    { display: grid; gap: 4px; }
+.mcdu-keys .mk-grid-4  { grid-template-columns: repeat(4, 1fr); }
+.mcdu-keys .mk-grid-5  { grid-template-columns: repeat(5, 1fr); }
+.mcdu-keys .mk-grid-7  { grid-template-columns: repeat(7, 1fr); }
+
+.mcdu-keys .mk {
+    appearance: none;
+    background: #1e293b;
+    color: #e5e7eb;
+    border: 1px solid #334155;
+    border-radius: 5px;
+    padding: 7px 0;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+    min-height: 30px;
+}
+.mcdu-keys .mk:hover  { background: #283549; }
+.mcdu-keys .mk:active { background: #334155; transform: translateY(1px); }
+
+.mcdu-keys .mk.lsk { background: #0f172a; color: #fbbf24; border-color: #475569; }
+.mcdu-keys .mk.lsk-l::before { content: '< '; color: #94a3b8; }
+.mcdu-keys .mk.lsk-r::after  { content: ' >'; color: #94a3b8; }
+
+.mcdu-keys .mk.fn    { background: #1f2937; color: #f1f5f9; font-size: 10px; padding: 6px 2px; }
+.mcdu-keys .mk.slew  { background: #0c4a6e; color: #e0f2fe; font-size: 11px; }
+.mcdu-keys .mk.alpha { background: #1e293b; color: #e5e7eb; }
+.mcdu-keys .mk.num   { background: #0b1220; color: #67e8f9; font-size: 13px; padding: 8px 0; }
+.mcdu-keys .mk.edit  { background: #1f2937; color: #f9fafb; font-size: 10px; }
+.mcdu-keys .mk.edit.clr { background: #7f1d1d; color: #fee2e2; }
+
+.mcdu-keys .mk-readonly {
+    margin: 6px 0 0;
+    font-size: 10px;
+    color: #fbbf24;
+    text-align: center;
+    line-height: 1.4;
+}
+.mcdu-keys .mk-readonly code {
+    background: #1f2937;
+    color: #67e8f9;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: 'Share Tech Mono', monospace;
+}
 
 /* ============ AP / FD / A/THR engagement pills ============ */
 

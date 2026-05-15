@@ -114,7 +114,29 @@ namespace MSFSFlightFollowing.Controllers
             tdReached = s.A32nxTdReached,
             altitudeFt = (int)s.Altitude,
             ias = (int)s.AirspeedIndicated,
-            hdg = (int)s.TrueHeading
+            hdg = (int)s.TrueHeading,
+            // ---- FCU display raw LVar values (debugging Headwind/FBW LVar names) ----
+            fcuRaw = new
+            {
+               speedSelected   = s.RawStruct.FcuSpeedSelected,
+               machSelected    = s.RawStruct.FcuMachSelected,
+               spdManagedDot   = s.RawStruct.FcuSpdManagedDot,
+               spdManagedDash  = s.RawStruct.FcuSpdManagedDashes,
+               headingSelected = s.RawStruct.FcuHeadingSelected,
+               displayHdgTrk   = s.RawStruct.DISPLAY_HDG_TRK,
+               hdgManagedDot   = s.RawStruct.FcuHdgManagedDot,
+               hdgManagedDash  = s.RawStruct.FcuHdgManagedDashes,
+               trkFpaMode      = s.RawStruct.FcuTrkFpaModeActive,
+               altitudeSelected = s.RawStruct.FcuAltitudeSelected,
+               altManaged      = s.RawStruct.FcuAltManaged,
+               vsSelected      = s.RawStruct.FcuVsSelected,
+               fpaSelected     = s.RawStruct.FcuFpaSelected,
+               apAirspeed      = s.RawStruct.ApAirspeedHoldVar,
+               apHeading       = s.RawStruct.ApHeadingLockDir,
+               apAltitude      = s.RawStruct.ApAltitudeLockVar,
+               apVertical      = s.RawStruct.ApVerticalHoldVar
+            },
+            fcuDisplay = s.Fcu
          });
       }
 
@@ -146,5 +168,50 @@ namespace MSFSFlightFollowing.Controllers
       }
 
       public sealed record BeginDescentRequest(int? Value);
+
+      /// <summary>
+      /// Triggers the SimConnect <c>BAROMETRIC</c> event — the equivalent of
+      /// pressing the <c>B</c> key in MSFS — which re-sets every altimeter to
+      /// the current local QNH at the aircraft's position. Read-only by default;
+      /// requires <c>Features.Sim.WriteEnabled = true</c>. On FBW/Headwind this
+      /// also exits STD mode first so the synced QNH is actually visible on the
+      /// captain-side ECAM.
+      /// </summary>
+      [HttpPost("api/sim/qnh-sync")]
+      public JsonResult QnhSync([FromServices] MSFSFlightFollowing.SimConnect.ISimCommands sim)
+      {
+         // Exit STD on FBW/Headwind first; harmless on stock MSFS aircraft.
+         sim.KohlsmanExitStd();
+         sim.KohlsmanSyncLocal();
+         return Json(new { ok = true });
+      }
+
+      /// <summary>
+      /// Send a single MCDU keypress to FlyByWire SimBridge. Body must be JSON
+      /// <c>{ "side": "left"|"right", "key": "L1"|...|"DIR"|"FPLN"|"A"|"1"|... }</c>.
+      /// Gated by <c>Features.Sim.WriteEnabled</c> + a whitelist of FBW key names.
+      /// </summary>
+      [HttpPost("api/mcdu/key")]
+      public async System.Threading.Tasks.Task<JsonResult> McduKey(
+         [FromBody] McduKeyRequest body,
+         [FromServices] SimBridgeClient bridge,
+         [FromServices] MSFSFlightFollowing.SimConnect.SimConnector sim)
+      {
+         if (!sim.WriteEnabled)
+            return Json(new { ok = false, error = "read-only" });
+         if (!bridge.Enabled || !bridge.IsConnected)
+            return Json(new { ok = false, error = "simbridge-offline" });
+         if (body == null || string.IsNullOrWhiteSpace(body.Key))
+            return Json(new { ok = false, error = "missing-key" });
+
+         var ok = await bridge.SendKeyAsync(body.Side ?? "left", body.Key);
+         return Json(new { ok });
+      }
+
+      public sealed class McduKeyRequest
+      {
+         public string Side { get; set; }
+         public string Key  { get; set; }
+      }
    }
 }

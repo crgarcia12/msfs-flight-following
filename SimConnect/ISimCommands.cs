@@ -52,4 +52,20 @@ public interface ISimCommands
     void FcuPushLoc();
     void FcuPushAppr();
     void FcuPushExped();
+
+    /// <summary>
+    /// Triggers the SimConnect <c>BAROMETRIC</c> event, which is the in-sim
+    /// equivalent of pressing the <c>B</c> key: every altimeter is re-set to
+    /// the current local QNH at the aircraft's position. On FBW/Headwind this
+    /// has no visible effect while the altimeter is in STD mode — call
+    /// <see cref="KohlsmanExitStd"/> first.
+    /// </summary>
+    void KohlsmanSyncLocal();
+
+    /// <summary>
+    /// Exits STD (Standard 1013/29.92) altimeter mode on the captain-side EFIS
+    /// of FlyByWire A32NX and Headwind A330. Fires the <c>FCU_EFIS_L_BARO_PULL</c>
+    /// custom event; silently no-ops on stock MSFS aircraft.
+    /// </summary>
+    void KohlsmanExitStd();
 }

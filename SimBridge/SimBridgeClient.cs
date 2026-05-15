@@ -190,6 +190,64 @@ public class SimBridgeClient : ISimBridgeMcdu
         }
     }
 
+    // Whitelist of MCDU key codes accepted by the FBW SimBridge gateway. The
+    // names must match exactly what the Remote-MCDU client emits over its
+    // "event:<side>:<KEY>" protocol — see /interfaces/mcdu/index.js inside
+    // SimBridge. Anything not in this set is rejected so a malicious or buggy
+    // client can't smuggle arbitrary payloads to the cockpit.
+    private static readonly System.Collections.Generic.HashSet<string> McduKeyWhitelist = new(StringComparer.Ordinal)
+    {
+        "L1","L2","L3","L4","L5","L6",
+        "R1","R2","R3","R4","R5","R6",
+        "DIR","PROG","PERF","INIT","DATA",
+        "FPLN","RAD","FUEL","MENU","AIRPORT",
+        "PREVPAGE","NEXTPAGE","UP","DOWN",
+        "CLR","OVFY","DIV","SP","PLUSMINUS","DOT","BRT","DIM",
+        "A","B","C","D","E","F","G","H","I","J","K","L","M",
+        "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+        "0","1","2","3","4","5","6","7","8","9"
+    };
+
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+
+    /// <summary>
+    /// Fires a single MCDU keypress over the existing SimBridge WebSocket.
+    /// <paramref name="side"/> selects captain ("left") or first-officer ("right").
+    /// <paramref name="key"/> must be a member of <see cref="McduKeyWhitelist"/>.
+    /// </summary>
+    public async Task<bool> SendKeyAsync(string side, string key)
+    {
+        if (!Enabled || !IsConnected || ws == null) return false;
+        if (string.IsNullOrWhiteSpace(key)) return false;
+
+        var normalized = key.Trim().ToUpperInvariant();
+        if (!McduKeyWhitelist.Contains(normalized))
+        {
+            _logger.LogWarning("MCDU key rejected (not in whitelist): {Key}", key);
+            return false;
+        }
+
+        var s = string.Equals(side, "right", StringComparison.OrdinalIgnoreCase) ? "right" : "left";
+        var bytes = Encoding.UTF8.GetBytes($"event:{s}:{normalized}");
+
+        await _sendLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("MCDU key send failed ({Side}:{Key}): {Message}", s, normalized, ex.Message);
+            return false;
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
+    }
+
     private async Task Type(ClientWebSocket ws, string text)
     {
         foreach (char character in text)

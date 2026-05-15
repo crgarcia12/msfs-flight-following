@@ -77,10 +77,17 @@ public sealed class SimDataDispatcher : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Heartbeat: even when SimConnect isn't delivering aircraft data (e.g.
+        // user is in the menu, or an LVar in the data definition is unavailable
+        // for the current aircraft), we still push the live services state so
+        // the UI shows the correct CONNECTED / NO SIM / NO DATA badge.
+        _ = Task.Run(() => HeartbeatLoopAsync(stoppingToken), stoppingToken);
+
         try
         {
             await foreach (var aircraft in _channel.Reader.ReadAllAsync(stoppingToken))
             {
+                _lastAircraftAt = DateTime.UtcNow;
                 EnrichWithVerticalSpeed(aircraft);
 
                 // Detectors will overwrite FlightPhase before we send to clients;
@@ -99,6 +106,37 @@ public sealed class SimDataDispatcher : BackgroundService
                 catch (Exception ex) { _logger.LogWarning(ex, "SignalR ReceiveData send failed"); }
 
                 _ = SendToEventHubAsync(clientData);
+            }
+        }
+        catch (OperationCanceledException) { /* shutdown */ }
+    }
+
+    private DateTime? _lastAircraftAt;
+    private AircraftStatusModel? _lastAircraft;
+
+    private async Task HeartbeatLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(2000, token).ConfigureAwait(false);
+                // If we sent a real aircraft frame in the last 2.5 s, skip — the
+                // data path already covers the UI.
+                if (_lastAircraftAt.HasValue && (DateTime.UtcNow - _lastAircraftAt.Value).TotalSeconds < 2.5)
+                    continue;
+
+                // SimConnect handle is open but no data has arrived for a while.
+                // Surface the real services state so the UI doesn't show stale "NO SIM".
+                var frame = new ClientData
+                {
+                    IsConnected = _sim.IsConnected,
+                    Data = _sim.LatestSnapshot,
+                    Services = SnapshotServices(simConnected: _sim.IsConnected && _sim.LatestSnapshot != null),
+                    Mcdu = _simBridge.CurrentScreen
+                };
+                try { await _hub.Clients.All.SendAsync("ReceiveData", frame, token); }
+                catch (Exception ex) { _logger.LogDebug(ex, "Heartbeat send failed"); }
             }
         }
         catch (OperationCanceledException) { /* shutdown */ }

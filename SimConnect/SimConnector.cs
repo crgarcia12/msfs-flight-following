@@ -140,8 +140,20 @@ public sealed class SimConnector : ISimCommands, IDisposable
 
     private void OnRecvException(Microsoft.FlightSimulator.SimConnect.SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
     {
-        _logger.LogError("SimConnect exception: {Code}", data.dwException);
-        Disconnect();
+        var code = (SIMCONNECT_EXCEPTION)data.dwException;
+        // dwIndex is which field of our data definition triggered the error.
+        // Logging it surfaces problems like an LVar/SimVar that doesn't exist
+        // on the currently-loaded aircraft (e.g. FBW LVars on a stock plane).
+        _logger.LogError(
+            "SimConnect exception: {Code} ({Raw}) sendId={SendId} index={Index}",
+            code, data.dwException, data.dwSendID, data.dwIndex);
+        // Most exceptions (e.g. UNRECOGNIZED_ID for one bad SimVar) leave the
+        // connection healthy and other vars still readable. Don't tear down the
+        // whole session for them — only QUIT/CONNECTION-related errors should.
+        if (code == SIMCONNECT_EXCEPTION.UNOPENED || code == SIMCONNECT_EXCEPTION.VERSION_MISMATCH)
+        {
+            Disconnect();
+        }
     }
 
     private async Task PollLoopAsync()
@@ -151,11 +163,18 @@ public sealed class SimConnector : ISimCommands, IDisposable
             while (!_cts.IsCancellationRequested)
             {
                 await Task.Delay(1000, _cts.Token).ConfigureAwait(false);
-                if (_hasConnectedClients())
+                // Always poll. Even with no WS clients we want a fresh snapshot
+                // so /healthz, /api/debug/snapshot, and a freshly-opening client
+                // all see live data immediately.
+                try
                 {
                     _simconnect?.RequestDataOnSimObjectType(
                         DATA_REQUEST.AircraftStatus, DEFINITIONS.AircraftStatus, 0,
                         SIMCONNECT_SIMOBJECT_TYPE.USER);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "RequestDataOnSimObjectType failed (will retry)");
                 }
             }
         }
@@ -336,4 +355,19 @@ public sealed class SimConnector : ISimCommands, IDisposable
     public void FcuPushLoc()                    { if (_simconnect == null) return; TransmitFcu("FCU_LOC_PUSH"); }
     public void FcuPushAppr()                   { if (_simconnect == null) return; TransmitFcu("FCU_APPR_PUSH"); }
     public void FcuPushExped()                  { if (_simconnect == null) return; TransmitFcu("FCU_EXPED_PUSH"); }
+
+    /// <summary>
+    /// One-tap "B key" — fires the SimConnect <c>BAROMETRIC</c> event, which
+    /// re-sets every altimeter to the current local QNH (29.92 inHg / 1013 hPa
+    /// above transition altitude, real-world pressure below).
+    /// </summary>
+    public void KohlsmanSyncLocal()             { if (_simconnect == null) return; TransmitEventByName("BAROMETRIC"); }
+
+    /// <summary>
+    /// Exits STD altimeter mode on FBW/Headwind by firing the captain-side
+    /// EFIS baro PULL custom event. TransmitFcu prepends both A32NX. and A339X.
+    /// prefixes so this works on both airframes; on stock MSFS aircraft the
+    /// event is unregistered and silently dropped.
+    /// </summary>
+    public void KohlsmanExitStd()               { if (_simconnect == null) return; TransmitFcu("FCU_EFIS_L_BARO_PULL"); }
 }

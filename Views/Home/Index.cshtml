@@ -80,6 +80,79 @@
                     </button>
                 </div>
 
+                <!-- ============ FCU display panel ============
+                     Mirrors the cockpit Airbus FCU windows. Read-only — set values
+                     from the existing FCU control panel (or from the cockpit). -->
+                <div class="fcu-display" v-if="acInfo.fcuDisplay && acInfo.fcuDisplay.source !== 'none'">
+                    <div class="fcu-window">
+                        <div class="fcu-label">{{ acInfo.fcuDisplay.spdIsMach ? 'MACH' : 'SPD' }}</div>
+                        <div class="fcu-value">{{ acInfo.fcuDisplay.spdText }}</div>
+                        <div class="fcu-dot" :class="{ on: acInfo.fcuDisplay.spdManaged }"></div>
+                    </div>
+                    <div class="fcu-window">
+                        <div class="fcu-label">{{ acInfo.fcuDisplay.hdgIsTrack ? 'TRK' : 'HDG' }}</div>
+                        <div class="fcu-value">{{ acInfo.fcuDisplay.hdgText }}</div>
+                        <div class="fcu-dot" :class="{ on: acInfo.fcuDisplay.hdgManaged }"></div>
+                    </div>
+                    <div class="fcu-divider"></div>
+                    <div class="fcu-window fcu-window-alt">
+                        <div class="fcu-label">ALT</div>
+                        <div class="fcu-value">{{ acInfo.fcuDisplay.altText }}</div>
+                        <div class="fcu-dot" :class="{ on: acInfo.fcuDisplay.altManaged }"></div>
+                    </div>
+                    <div class="fcu-window">
+                        <div class="fcu-label">{{ acInfo.fcuDisplay.vsIsFpa ? 'FPA' : 'V/S' }}</div>
+                        <div class="fcu-value" :class="{ dim: !acInfo.fcuDisplay.vsActive }">{{ acInfo.fcuDisplay.vsText }}</div>
+                    </div>
+                    <div class="fcu-divider"></div>
+                    <!-- QNH window + B-key sync button. Tap "SYNC" to fire the
+                         BAROMETRIC event (same as pressing B in MSFS). -->
+                    <div class="fcu-window fcu-window-qnh">
+                        <div class="fcu-label">QNH hPa</div>
+                        <div class="fcu-value">{{ acInfo.qnhMb || '----' }}</div>
+                        <button class="fcu-qnh-sync"
+                                v-on:click="syncQnh"
+                                :disabled="!services.simWriteEnabled"
+                                :title="services.simWriteEnabled ? 'Set altimeter to current local QNH (same as the B key in MSFS)' : 'Enable Features.Sim.WriteEnabled in appsettings to allow QNH sync'">
+                            SYNC
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ============ Quick AP buttons ============
+                     Visible row of FCU push-buttons for the most common autoflight
+                     actions: AP1/AP2, A/THR, APPR (autoland), LOC, EXPED. Each
+                     button is "lit" green when the function is active. The full
+                     FCU panel (SPD/HDG/ALT/VS knobs, push/pull) is still in the
+                     pop-out tab on the right; these are just shortcuts. -->
+                <div class="ap-quick" v-if="simConnected">
+                    <button class="ap-quick-btn" :class="{ on: acInfo.a32nxAp1 }"
+                            v-on:click="fcuPost('ap1')"
+                            :disabled="!services.simWriteEnabled"
+                            title="Toggle Autopilot 1">AP1</button>
+                    <button class="ap-quick-btn" :class="{ on: acInfo.a32nxAp2 }"
+                            v-on:click="fcuPost('ap2')"
+                            :disabled="!services.simWriteEnabled"
+                            title="Toggle Autopilot 2 — required (with AP1) for CAT III autoland">AP2</button>
+                    <button class="ap-quick-btn"
+                            :class="{ on: acInfo.fmaAthrActive, arm: acInfo.fmaAthrArmed && !acInfo.fmaAthrActive }"
+                            v-on:click="fcuPost('athr')"
+                            :disabled="!services.simWriteEnabled"
+                            title="Toggle Autothrust">A/THR</button>
+                    <button class="ap-quick-btn ap-quick-btn-loc"
+                            v-on:click="fcuPost('loc')"
+                            :disabled="!services.simWriteEnabled"
+                            title="Push LOC — arm localizer capture">LOC</button>
+                    <button class="ap-quick-btn ap-quick-btn-appr"
+                            v-on:click="fcuPost('appr')"
+                            :disabled="!services.simWriteEnabled"
+                            title="Push APPR — arm ILS approach (localizer + glideslope)">APPR</button>
+                    <button class="ap-quick-btn"
+                            v-on:click="fcuPost('exped')"
+                            :disabled="!services.simWriteEnabled"
+                            title="Push EXPED — accelerate vertical capture (use with caution)">EXPED</button>
+                </div>
+
                 <!-- Plain-English current-mode summary, for non-Airbus pilots.
                      Always shown when the sim is connected, regardless of airframe. -->
                 <div class="ap-summary" v-if="simConnected">
@@ -171,6 +244,11 @@
                     <div class="status-dot" :class="simBridgeDotClass" :title="'SimBridge: ' + services.simBridgeStatus">BRG</div>
                     <div class="status-dot" :class="statusClass(services.eventHub)" title="Azure Event Hub">CLD</div>
                     <div class="status-dot" v-if="vatsim.controllers.length > 0" :class="vatsimDotClass" :title="'VATSIM: ' + vatsim.controllers.length + ' controller(s) in range'" v-on:click="vatsimPanelOpen = !vatsimPanelOpen">VAT {{ vatsim.controllers.length }}</div>
+                    <div class="fir-pill" v-if="vatsim.insideFir" :title="'Inside FIR ' + vatsim.insideFir.icao + ' · ' + (vatsim.insideFir.controllerName || vatsim.insideFir.callsign)">
+                        <span class="material-icons">my_location</span>
+                        <span class="fir-pill-icao">{{ vatsim.insideFir.icao }}</span>
+                        <span class="fir-pill-meta">{{ vatsim.insideFir.callsign }} · {{ vatsim.insideFir.frequency }}</span>
+                    </div>
                 </div>
             </div>
 
@@ -411,6 +489,71 @@
                     <span class="material-icons" style="font-size: 32px;">cloud_off</span>
                     <p>MCDU offline.</p>
                     <p class="mcdu-hint">{{ mcduOfflineHint }}</p>
+                </div>
+
+                <!-- ===== MCDU keypad ===== -->
+                <div class="mcdu-keys" v-if="mcdu && mcdu.left" :class="{ 'mcdu-keys-disabled': !services.simWriteEnabled }">
+                    <div class="mk-lsk-row">
+                        <button v-for="n in 6" :key="'L'+n" class="mk lsk lsk-l" v-on:click="mcduKey('L'+n)">L{{ n }}</button>
+                    </div>
+                    <div class="mk-lsk-row">
+                        <button v-for="n in 6" :key="'R'+n" class="mk lsk lsk-r" v-on:click="mcduKey('R'+n)">R{{ n }}</button>
+                    </div>
+                    <div class="mk-grid mk-grid-5">
+                        <button class="mk fn" v-on:click="mcduKey('DIR')">DIR</button>
+                        <button class="mk fn" v-on:click="mcduKey('PROG')">PROG</button>
+                        <button class="mk fn" v-on:click="mcduKey('PERF')">PERF</button>
+                        <button class="mk fn" v-on:click="mcduKey('INIT')">INIT</button>
+                        <button class="mk fn" v-on:click="mcduKey('DATA')">DATA</button>
+                    </div>
+                    <div class="mk-grid mk-grid-5">
+                        <button class="mk fn" v-on:click="mcduKey('FPLN')">F-PLN</button>
+                        <button class="mk fn" v-on:click="mcduKey('RAD')">RAD&nbsp;NAV</button>
+                        <button class="mk fn" v-on:click="mcduKey('FUEL')">FUEL</button>
+                        <button class="mk fn" v-on:click="mcduKey('MENU')">MENU</button>
+                        <button class="mk fn" v-on:click="mcduKey('AIRPORT')">AIRPORT</button>
+                    </div>
+                    <div class="mk-grid mk-grid-4">
+                        <button class="mk slew" v-on:click="mcduKey('PREVPAGE')">◀ PREV</button>
+                        <button class="mk slew" v-on:click="mcduKey('UP')">▲</button>
+                        <button class="mk slew" v-on:click="mcduKey('DOWN')">▼</button>
+                        <button class="mk slew" v-on:click="mcduKey('NEXTPAGE')">NEXT ▶</button>
+                    </div>
+                    <div class="mk-grid mk-grid-7">
+                        <button v-for="c in 'ABCDEFG'.split('')" :key="c" class="mk alpha" v-on:click="mcduKey(c)">{{ c }}</button>
+                    </div>
+                    <div class="mk-grid mk-grid-7">
+                        <button v-for="c in 'HIJKLMN'.split('')" :key="c" class="mk alpha" v-on:click="mcduKey(c)">{{ c }}</button>
+                    </div>
+                    <div class="mk-grid mk-grid-7">
+                        <button v-for="c in 'OPQRSTU'.split('')" :key="c" class="mk alpha" v-on:click="mcduKey(c)">{{ c }}</button>
+                    </div>
+                    <div class="mk-grid mk-grid-7">
+                        <button v-for="c in 'VWXYZ'.split('')" :key="c" class="mk alpha" v-on:click="mcduKey(c)">{{ c }}</button>
+                        <button class="mk alpha" v-on:click="mcduKey('DIV')" title="Slash (/)">/</button>
+                        <button class="mk alpha" v-on:click="mcduKey('SP')">SP</button>
+                    </div>
+                    <div class="mk-grid mk-grid-5">
+                        <button class="mk num" v-on:click="mcduKey('1')">1</button>
+                        <button class="mk num" v-on:click="mcduKey('2')">2</button>
+                        <button class="mk num" v-on:click="mcduKey('3')">3</button>
+                        <button class="mk edit clr" v-on:click="mcduKey('CLR')">CLR</button>
+                        <button class="mk edit" v-on:click="mcduKey('OVFY')">OVFY</button>
+                    </div>
+                    <div class="mk-grid mk-grid-5">
+                        <button class="mk num" v-on:click="mcduKey('4')">4</button>
+                        <button class="mk num" v-on:click="mcduKey('5')">5</button>
+                        <button class="mk num" v-on:click="mcduKey('6')">6</button>
+                        <button class="mk edit" v-on:click="mcduKey('PLUSMINUS')">+/−</button>
+                        <button class="mk edit" v-on:click="mcduKey('DOT')">·</button>
+                    </div>
+                    <div class="mk-grid mk-grid-5">
+                        <button class="mk num" v-on:click="mcduKey('7')">7</button>
+                        <button class="mk num" v-on:click="mcduKey('8')">8</button>
+                        <button class="mk num" v-on:click="mcduKey('9')">9</button>
+                        <button class="mk num" v-on:click="mcduKey('0')" style="grid-column: span 2;">0</button>
+                    </div>
+                    <p v-if="!services.simWriteEnabled" class="mk-readonly">READ ONLY — set <code>Features.Sim.WriteEnabled = true</code> to type into the MCDU.</p>
                 </div>
             </div>
 

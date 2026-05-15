@@ -15,7 +15,33 @@ class FlightMap {
         this.trailVisible = true;
         this.vatsimMarkerLayer = null;
         this.vatsimCoverageLayer = null;
+        this.vatsimSectorsLayer = null;
         this.vatsimMarkersByCallsign = new Map();
+
+        // FIR boundary overlay state.
+        // - firFeaturesById: ICAO → array of GeoJSON features (one FIR can have
+        //   continental + oceanic halves sharing the same id).
+        // - firFeaturesBboxes: WeakMap<feature, {minLat,maxLat,minLon,maxLon}>
+        //   used to cheaply skip ray-casting against far-away polygons.
+        // - activeSectors: callsign → { feats, layerGroup, baseColor, icao, controller, inside }
+        //   keyed by callsign (not ICAO) so two controllers in the same FIR
+        //   keep distinct entries.
+        this.firFeaturesById = null;
+        this.firFeaturesBboxes = null;
+        this.firLoadState = 'idle';   // 'idle' | 'loading' | 'ready' | 'failed'
+        this.firLoadPromise = null;
+        this.activeSectors = new Map();
+        // Canvas renderer for FIR polygons. SVG (Leaflet's default) breaks badly
+        // on whole-world geometries (oceanic FIRs) — the renderer pane balloons
+        // to an SVG size the browser can't draw, clipping the tile view to a
+        // tiny square around the aircraft. Canvas handles arbitrary sizes fine.
+        this.firCanvasRenderer = L.canvas({ padding: 0.5 });
+        this.acLat = null;
+        this.acLon = null;
+        this.insideKey = null;
+        this.onInsideFirChanged = null;
+        this._latestControllers = [];
+
         this.InitMap();
     }
 
@@ -24,6 +50,10 @@ class FlightMap {
 
         this.marker.setLatLng(newPos);
         this.marker.setRotationAngle(heading);
+
+        this.acLat = lat;
+        this.acLon = lng;
+        this._recomputeInsideFir();
 
         // Append to trail
         const last = this.trailPoints[this.trailPoints.length - 1];
@@ -159,6 +189,7 @@ class FlightMap {
         const overlayMaps = {
             "OpenAIP NavAids": navAidsLayer,
             "VATSIM Stations": this.vatsimMarkerLayer = L.layerGroup().addTo(this.map),
+            "VATSIM Sectors":  this.vatsimSectorsLayer = L.layerGroup().addTo(this.map),
             "VATSIM Coverage": this.vatsimCoverageLayer = L.layerGroup()
         };
         this.layerControl = L.control.layers(baseMaps, overlayMaps).addTo(this.map);
@@ -238,6 +269,234 @@ class FlightMap {
                 }).addTo(this.vatsimCoverageLayer);
             }
         }
+
+        // Drive the FIR sectors overlay too. We always keep the latest list
+        // around so a deferred fetch can render once the GeoJSON arrives.
+        this._latestControllers = controllers;
+        if (this.firLoadState === 'ready') {
+            this.RebuildVatsimSectors(controllers);
+        } else if (this.firLoadState === 'idle') {
+            // Defer the 10 MB fetch slightly so the initial map paint isn't blocked.
+            setTimeout(() => {
+                this.LoadFirBoundaries().then(ok => {
+                    if (ok) this.RebuildVatsimSectors(this._latestControllers || []);
+                });
+            }, 1500);
+        } else if (this.firLoadState === 'loading' && this.firLoadPromise) {
+            this.firLoadPromise.then(ok => {
+                if (ok) this.RebuildVatsimSectors(this._latestControllers || []);
+            });
+        }
+    }
+
+    // Lazy-fetch the VAT-Spy FIR/UIR boundary GeoJSON from jsdelivr. ~10 MB,
+    // cached by the browser after the first hit. Best-effort: on failure the
+    // map keeps working with just markers.
+    async LoadFirBoundaries() {
+        if (this.firLoadState === 'ready')  return true;
+        if (this.firLoadState === 'failed') return false;
+        if (this.firLoadPromise)            return this.firLoadPromise;
+
+        this.firLoadState = 'loading';
+        this.firLoadPromise = (async () => {
+            try {
+                const r = await fetch('https://cdn.jsdelivr.net/gh/vatsimnetwork/vatspy-data-project@master/Boundaries.geojson');
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const fc = await r.json();
+                const byId   = new Map();
+                const bboxes = new WeakMap();
+                for (const f of (fc.features || [])) {
+                    const id = f.properties && f.properties.id;
+                    if (!id) continue;
+                    if (!byId.has(id)) byId.set(id, []);
+                    byId.get(id).push(f);
+                    bboxes.set(f, this._computeBbox(f.geometry));
+                }
+                this.firFeaturesById   = byId;
+                this.firFeaturesBboxes = bboxes;
+                this.firLoadState = 'ready';
+                console.info('VATSIM FIR boundaries loaded: ' + byId.size + ' regions');
+                return true;
+            } catch (e) {
+                console.warn('FIR boundaries load failed', e);
+                this.firLoadState = 'failed';
+                return false;
+            }
+        })();
+        return this.firLoadPromise;
+    }
+
+    _computeBbox(geom) {
+        let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+        const walkRing = (ring) => {
+            for (const c of ring) {
+                const lon = c[0], lat = c[1];
+                if (lat < minLat) minLat = lat;
+                if (lat > maxLat) maxLat = lat;
+                if (lon < minLon) minLon = lon;
+                if (lon > maxLon) maxLon = lon;
+            }
+        };
+        if (!geom) return { minLat, maxLat, minLon, maxLon };
+        if (geom.type === 'Polygon') {
+            for (const ring of (geom.coordinates || [])) walkRing(ring);
+        } else if (geom.type === 'MultiPolygon') {
+            for (const poly of (geom.coordinates || []))
+                for (const ring of poly) walkRing(ring);
+        }
+        return { minLat, maxLat, minLon, maxLon };
+    }
+
+    // Render one Leaflet layer-group per online CTR/FSS controller whose
+    // callsign prefix matches a known FIR id. Diff against the previous set
+    // so we only add/remove what's changed (no flicker, no rebuild per tick).
+    RebuildVatsimSectors(controllers) {
+        if (!this.firFeaturesById || !this.vatsimSectorsLayer) return;
+
+        const wanted = new Map();   // key → { icao, feats, controller, isCtr }
+        for (const c of (controllers || [])) {
+            const facility = c.facilityShort;
+            if (facility !== 'CTR' && facility !== 'FSS') continue;
+            const segs = (c.callsign || '').split('_');
+            if (segs.length < 2) continue;
+            // VATSIM callsign convention: first underscore-segment is the
+            // boundary identifier (LFFF_W_CTR → LFFF). Best-effort: silently
+            // skip controllers whose id is not in the boundary set.
+            const icao = segs[0];
+            const feats = this.firFeaturesById.get(icao);
+            if (!feats) continue;
+            const key = c.callsign + '|' + icao;
+            wanted.set(key, { icao, feats, controller: c, isCtr: facility === 'CTR' });
+        }
+
+        // Remove sectors no longer online.
+        for (const [key, entry] of Array.from(this.activeSectors.entries())) {
+            if (!wanted.has(key)) {
+                this.vatsimSectorsLayer.removeLayer(entry.layerGroup);
+                this.activeSectors.delete(key);
+            }
+        }
+
+        // Add newcomers.
+        for (const [key, m] of wanted) {
+            if (this.activeSectors.has(key)) continue;
+            const baseColor = m.isCtr ? '#22d3ee' : '#fbbf24';
+            const layerGroup = L.featureGroup();
+            for (const feat of m.feats) {
+                const layer = L.geoJSON(feat, {
+                    renderer: this.firCanvasRenderer,
+                    style: {
+                        color: baseColor,
+                        weight: 1.5,
+                        opacity: 0.85,
+                        fillColor: baseColor,
+                        fillOpacity: 0.04
+                    },
+                    interactive: true
+                });
+                const tip = `<strong>${m.controller.callsign}</strong>`
+                    + `<br>${m.controller.controllerName || ''}`
+                    + `<br>${m.controller.frequency || ''} · ${m.icao}`;
+                layer.bindTooltip(tip, { sticky: true });
+                layer.addTo(layerGroup);
+            }
+            layerGroup.addTo(this.vatsimSectorsLayer);
+            this.activeSectors.set(key, {
+                controller: m.controller,
+                feats:      m.feats,
+                layerGroup,
+                baseColor,
+                icao:       m.icao,
+                inside:     false
+            });
+        }
+
+        // Inside status may have changed (controller went offline, etc.).
+        this._recomputeInsideFir();
+    }
+
+    _pointInRing(lon, lat, ring) {
+        // Ray-casting. GeoJSON ring is array of [lon, lat] pairs.
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const xi = ring[i][0], yi = ring[i][1];
+            const xj = ring[j][0], yj = ring[j][1];
+            const intersect = ((yi > lat) !== (yj > lat))
+                && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    _pointInGeometry(lon, lat, geom) {
+        if (!geom) return false;
+        if (geom.type === 'Polygon') {
+            const rings = geom.coordinates;
+            if (!rings || rings.length === 0) return false;
+            if (!this._pointInRing(lon, lat, rings[0])) return false;
+            for (let i = 1; i < rings.length; i++) {
+                if (this._pointInRing(lon, lat, rings[i])) return false; // in hole
+            }
+            return true;
+        }
+        if (geom.type === 'MultiPolygon') {
+            for (const poly of (geom.coordinates || [])) {
+                if (!poly || poly.length === 0) continue;
+                if (!this._pointInRing(lon, lat, poly[0])) continue;
+                let inHole = false;
+                for (let i = 1; i < poly.length; i++) {
+                    if (this._pointInRing(lon, lat, poly[i])) { inHole = true; break; }
+                }
+                if (!inHole) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    _recomputeInsideFir() {
+        if (this.acLat == null || this.acLon == null) return;
+        if (this.activeSectors.size === 0 && this.insideKey == null) return;
+
+        let foundKey = null;
+        let foundEntry = null;
+
+        for (const [key, entry] of this.activeSectors) {
+            let inside = false;
+            for (const feat of entry.feats) {
+                const bbox = this.firFeaturesBboxes && this.firFeaturesBboxes.get(feat);
+                if (bbox) {
+                    if (this.acLat < bbox.minLat || this.acLat > bbox.maxLat
+                        || this.acLon < bbox.minLon || this.acLon > bbox.maxLon) continue;
+                }
+                if (this._pointInGeometry(this.acLon, this.acLat, feat.geometry)) {
+                    inside = true; break;
+                }
+            }
+            if (inside !== entry.inside) {
+                const color = inside ? '#ef4444' : entry.baseColor;
+                const weight = inside ? 3 : 1.5;
+                const fillOpacity = inside ? 0.15 : 0.04;
+                entry.layerGroup.eachLayer(lyr => {
+                    if (lyr.setStyle) lyr.setStyle({ color, weight, fillColor: color, fillOpacity });
+                });
+                entry.inside = inside;
+            }
+            if (inside && foundKey == null) { foundKey = key; foundEntry = entry; }
+        }
+
+        if (foundKey !== this.insideKey) {
+            this.insideKey = foundKey;
+            if (typeof this.onInsideFirChanged === 'function') {
+                this.onInsideFirChanged(foundEntry ? {
+                    icao:           foundEntry.icao,
+                    callsign:       foundEntry.controller.callsign,
+                    controllerName: foundEntry.controller.controllerName,
+                    frequency:      foundEntry.controller.frequency,
+                    facility:       foundEntry.controller.facilityShort
+                } : null);
+            }
+        }
     }
 }
 
@@ -272,7 +531,8 @@ const app = new Vue({
         agentTtsEnabled: false,
         vatsim: {
             controllers: [],
-            everReceived: false
+            everReceived: false,
+            insideFir: null
         },
         vatsimPanelOpen: false,
         atisExpanded: {},
@@ -356,6 +616,8 @@ const app = new Vue({
         }
 
         this.map = new FlightMap();
+        // FlightMap publishes "inside FIR" events; Vue mirrors them for the HUD pill.
+        this.map.onInsideFirChanged = (fir) => { this.vatsim.insideFir = fir; };
 
         L.easyButton('<span class="material-icons">notifications</span>', () => {
             this.showAlerts = !this.showAlerts;
@@ -456,46 +718,75 @@ const app = new Vue({
             }
         },
         // ---------- MCDU rendering ----------
+        async mcduKey(key) {
+            if (!this.services.simWriteEnabled) {
+                console.warn('MCDU input blocked: app is in READ-ONLY mode.');
+                return;
+            }
+            try {
+                await fetch('/api/mcdu/key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ side: 'left', key })
+                });
+            } catch (e) {
+                console.warn('mcdu key failed', e);
+            }
+        },
         // Convert FBW MCDU tagged text (e.g. "{cyan}250{end}/{small}-5000{end}") into
         // sanitized HTML with coloured spans. Unknown tags are dropped; unmatched
         // {end} or open spans are auto-closed so a malformed line can't leak markup.
         renderMcdu(s) {
             if (!s) return '';
             const classes = {
-                '{white}':   'mc-w',
-                '{cyan}':    'mc-c',
-                '{green}':   'mc-g',
-                '{amber}':   'mc-a',
-                '{magenta}': 'mc-m',
-                '{small}':   'mc-sm',
-                '{big}':     'mc-bg',
-                '{right}':   'mc-rt',
-                '{left}':    'mc-lt'
+                'white':   'mc-w',
+                'cyan':    'mc-c',
+                'green':   'mc-g',
+                'amber':   'mc-a',
+                'magenta': 'mc-m',
+                'red':     'mc-r',
+                'yellow':  'mc-y',
+                'inop':    'mc-inop',
+                'small':   'mc-sm',
+                'big':     'mc-bg',
+                'right':   'mc-rt',
+                'left':    'mc-lt',
+                'center':  'mc-ct'
             };
-            const tokens = s.split(/(\{[^}]+\})/);
+            // Only match the closed set of recognised tag names. Any other
+            // '{...}' sequence (notably the left-chevron font glyph FBW emits
+            // at LSK rows, e.g. "{ILS11-Y") is preserved as literal text.
+            const tagRe = /\{(?:white|cyan|green|amber|magenta|red|yellow|inop|small|big|right|left|center|end|sp)\}/g;
             let html = '';
             let open = 0;
-            for (const t of tokens) {
-                if (!t) continue;
-                if (t === '{end}') {
+            let lastIdx = 0;
+            let m;
+            const emitText = (txt) => {
+                if (!txt) return;
+                // FBW uses '{' / '}' as left/right chevron font glyphs for line-
+                // select-key indicators. Map them to ASCII '<' / '>' so the user
+                // sees the LSK markers (e.g. "<ILS11-Y" for an approach choice).
+                html += txt
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/\{/g, '<')
+                    .replace(/\}/g, '>');
+            };
+            while ((m = tagRe.exec(s)) !== null) {
+                if (m.index > lastIdx) emitText(s.slice(lastIdx, m.index));
+                const tag = m[0];
+                if (tag === '{end}') {
                     if (open > 0) { html += '</span>'; open--; }
-                } else if (t === '{sp}') {
+                } else if (tag === '{sp}') {
                     html += ' ';
-                } else if (t.startsWith('{') && t.endsWith('}')) {
-                    const cls = classes[t];
-                    if (cls) {
-                        html += '<span class="' + cls + '">';
-                        open++;
-                    }
-                    // unknown tags get dropped silently
                 } else {
-                    // escape literal HTML special chars in the plain text content
-                    html += t
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;');
+                    const cls = classes[tag.slice(1, -1)];
+                    if (cls) { html += '<span class="' + cls + '">'; open++; }
                 }
+                lastIdx = tagRe.lastIndex;
             }
+            if (lastIdx < s.length) emitText(s.slice(lastIdx));
             while (open > 0) { html += '</span>'; open--; }
             return html;
         },
@@ -534,6 +825,18 @@ const app = new Vue({
             } else if (knob === 'vs') {
                 fcu.vs = Math.max(-6000, Math.min(6000, fcu.vs + delta));
                 this.fcuPost('vs/set', fcu.vs);
+            }
+        },
+        // ---- QNH sync (B-key equivalent) ----
+        async syncQnh() {
+            if (!this.services.simWriteEnabled) {
+                console.warn('QNH sync blocked: app is in READ-ONLY mode.');
+                return;
+            }
+            try {
+                await fetch('/api/sim/qnh-sync', { method: 'POST' });
+            } catch (e) {
+                console.warn('QNH sync failed', e);
             }
         },
         statusClass(value) {

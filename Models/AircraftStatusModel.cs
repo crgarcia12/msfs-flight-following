@@ -1,4 +1,5 @@
-﻿using static MSFSFlightFollowing.Models.SimConnectStructs;
+﻿using System.Text.Json.Serialization;
+using static MSFSFlightFollowing.Models.SimConnectStructs;
 
 namespace MSFSFlightFollowing.Models
 {
@@ -56,6 +57,13 @@ namespace MSFSFlightFollowing.Models
       public double WindDirectionDegrees { get; set; }
       public double OutsideAirTempC { get; set; }
 
+      /// <summary>
+      /// Altimeter QNH in hPa (millibars). Mirrors the Kohlsman setting on the
+      /// pilot-side altimeter so the web UI can show the same QNH as the
+      /// cockpit and offer a one-tap "sync to local QNH" (B-key equivalent).
+      /// </summary>
+      public int QnhMb { get; set; }
+
       // Radio altimeter / ground
       public double RadioAltitudeFeet { get; set; }
       public bool OnGround { get; set; }
@@ -109,8 +117,47 @@ namespace MSFSFlightFollowing.Models
 
       public AutoPilot Autopilot { get; set; }
 
+      /// <summary>
+      /// Pre-formatted FCU window contents, mirroring the cockpit Airbus FCU.
+      /// `Source = "fbw"` when FBW/Headwind LVars are populated; "generic" when
+      /// only stock SimConnect AP targets are available; "none" before sim load.
+      /// JSON name `fcuDisplay` to avoid clashing with the existing front-end
+      /// `fcu` object that holds the user-typed FCU control inputs.
+      /// </summary>
+      [JsonPropertyName("fcuDisplay")]
+      public FcuDisplay Fcu { get; set; } = new FcuDisplay();
+
+      public class FcuDisplay
+      {
+         public string Source { get; set; } = "none"; // "fbw" | "generic" | "none"
+
+         // Pre-formatted strings — render these directly in the FCU windows.
+         public string SpdText { get; set; } = "---";
+         public string HdgText { get; set; } = "---";
+         public string AltText { get; set; } = "-----";
+         public string VsText  { get; set; } = "-----";
+
+         // Mode hints for the small column labels above each window.
+         public bool   SpdManaged { get; set; }
+         public bool   SpdIsMach  { get; set; }
+         public bool   HdgManaged { get; set; }
+         public bool   HdgIsTrack { get; set; }
+         public bool   AltManaged { get; set; }
+         public bool   VsActive   { get; set; }   // window shows a value (V/S or FPA mode engaged)
+         public bool   VsIsFpa    { get; set; }
+      }
+
+      /// <summary>
+      /// Debug-only mirror of the raw SimConnect struct. Hidden from the
+      /// SignalR/JSON payload via [JsonIgnore]; the /api/debug/snapshot endpoint
+      /// reaches into this to surface raw LVar values when troubleshooting.
+      /// </summary>
+      [JsonIgnore]
+      public AircraftStatusStruct RawStruct { get; private set; }
+
       public AircraftStatusModel(AircraftStatusStruct status)
       {
+         RawStruct = status;
          Latitude = status.Latitude;
          Longitude = status.Longitude;
          Altitude = status.Altitude;
@@ -140,6 +187,7 @@ namespace MSFSFlightFollowing.Models
          WindVelocityKnots = status.WindVelocityKnots;
          WindDirectionDegrees = status.WindDirectionDegrees;
          OutsideAirTempC = status.OutsideAirTempC;
+         QnhMb = (int)System.Math.Round(status.QnhMb);
          RadioAltitudeFeet = status.RadioAltitudeFeet;
          OnGround = status.OnGround;
          FlapsHandleIndex = status.FlapsHandleIndex;
@@ -172,6 +220,8 @@ namespace MSFSFlightFollowing.Models
          A32nxAp1 = status.A32nxAp1Active != 0;
          A32nxAp2 = status.A32nxAp2Active != 0;
 
+         Fcu = BuildFcuDisplay(status);
+
          Autopilot = new AutoPilot()
          {
             Available = status.AutopilotAvailable,
@@ -189,6 +239,118 @@ namespace MSFSFlightFollowing.Models
             VerticalHold = status.AutopilotVerticalHold,
             YawDamper = status.AutopilotYawDamper
          };
+      }
+
+      // ----------------------------------------------------------------------
+      // FCU display formatter — turns the raw FBW LVars (or stock SimConnect
+      // AP target vars) into the strings the cockpit FCU windows would show.
+      // Format is shared by desktop & mobile so both views stay consistent.
+      // ----------------------------------------------------------------------
+      private static FcuDisplay BuildFcuDisplay(AircraftStatusStruct s)
+      {
+         var d = new FcuDisplay();
+
+         bool isFbw = s.A32nxFwcFlightPhase > 0
+                      || s.FcuSpeedSelected != 0
+                      || s.FcuAltitudeSelected != 0
+                      || s.FcuHeadingSelected != 0
+                      || s.FcuMachSelected != 0
+                      || s.FcuSpdManagedDashes != 0
+                      || s.FcuHdgManagedDashes != 0;
+
+         if (isFbw)
+         {
+            d.Source = "fbw";
+
+            // ---- SPD/MACH window ----
+            d.SpdManaged = s.FcuSpdManagedDot != 0;
+            bool spdDashes = s.FcuSpdManagedDashes != 0;
+            // FBW returns -1 (or sometimes 100) in SPEED_SELECTED when mach is the
+            // active reference. Use the relative validity of the two LVars to pick.
+            bool machIsRef = s.FcuMachSelected > 0
+                             && (s.FcuSpeedSelected <= 0 || s.FcuSpeedSelected > 999);
+            d.SpdIsMach = machIsRef;
+            // Selected speed falls back to stock SimConnect when the FBW LVar
+            // is not populated (Headwind A330 renames some FBW LVars).
+            double spdVal = s.FcuSpeedSelected > 0 ? s.FcuSpeedSelected
+                          : (s.ApAirspeedHoldVar > 0 ? s.ApAirspeedHoldVar : 0);
+            if (spdDashes)                d.SpdText = "---";
+            else if (machIsRef)           d.SpdText = "." + ((int)System.Math.Round(s.FcuMachSelected * 100)).ToString("D2");
+            else if (spdVal > 0)          d.SpdText = ((int)System.Math.Round(spdVal)).ToString("D3");
+            else                          d.SpdText = "---";
+
+            // ---- HDG/TRK window ----
+            d.HdgManaged = s.FcuHdgManagedDot != 0;
+            d.HdgIsTrack = s.FcuTrkFpaModeActive != 0;
+            bool hdgDashes = s.FcuHdgManagedDashes != 0;
+            // Prefer DISPLAY_HDG_TRK_VALUE (already-formatted FBW WASM output),
+            // then fall back to HEADING_SELECTED, then stock SimConnect.
+            int hdgVal = (int)s.DISPLAY_HDG_TRK;
+            if (hdgVal <= 0 || hdgVal > 360)
+                hdgVal = (int)System.Math.Round(s.FcuHeadingSelected);
+            if (hdgVal <= 0 || hdgVal > 360)
+                hdgVal = (int)System.Math.Round(s.ApHeadingLockDir);
+            hdgVal = ((hdgVal % 360) + 360) % 360;
+            if (hdgVal == 0) hdgVal = 360; // Airbus shows 360 not 000
+            d.HdgText = hdgDashes ? "---" : hdgVal.ToString("D3");
+
+            // ---- ALT window ----
+            d.AltManaged = s.FcuAltManaged != 0;
+            // FBW's A32NX_AUTOPILOT_ALTITUDE_SELECTED returns 0 on Headwind A330
+            // (renamed in the fork). Fall back to the stock SimConnect AP target,
+            // which is always the same value that's shown in the FCU window.
+            int altFt = (int)System.Math.Round(s.FcuAltitudeSelected);
+            if (altFt <= 0) altFt = (int)System.Math.Round(s.ApAltitudeLockVar);
+            d.AltText = altFt > 0 ? altFt.ToString("D5") : "-----";
+
+            // ---- V/S - FPA window ----
+            // Window shows a value only when the pilot has pulled V/S or FPA,
+            // i.e. the FMA vertical mode is V/S (14) or FPA (15) on FBW.
+            bool vsMode  = s.A32nxFmaVerticalMode == 14;
+            bool fpaMode = s.A32nxFmaVerticalMode == 15;
+            d.VsActive = vsMode || fpaMode;
+            d.VsIsFpa  = fpaMode || s.FcuTrkFpaModeActive != 0;
+            if (fpaMode)
+            {
+               double fpa = s.FcuFpaSelected;
+               string sign = fpa >= 0 ? "+" : "-";
+               d.VsText = sign + System.Math.Abs(fpa).ToString("F1") + "°";
+            }
+            else if (vsMode)
+            {
+               int vs = (int)System.Math.Round(s.FcuVsSelected);
+               // Same FBW-renamed-LVar fallback as ALT.
+               if (vs == 0 && s.ApVerticalHoldVar != 0)
+                  vs = (int)System.Math.Round(s.ApVerticalHoldVar);
+               string sign = vs >= 0 ? "+" : "-";
+               d.VsText = sign + System.Math.Abs(vs).ToString("D4");
+            }
+            else d.VsText = "-----";
+         }
+         else if (s.AutopilotMaster || s.AutopilotAvailable)
+         {
+            // Generic fallback — stock SimConnect AP target vars. No managed dots.
+            d.Source = "generic";
+            int spd = (int)System.Math.Round(s.ApAirspeedHoldVar);
+            d.SpdText = spd > 0 ? spd.ToString("D3") : "---";
+            int hdg = (int)System.Math.Round(s.ApHeadingLockDir);
+            hdg = ((hdg % 360) + 360) % 360;
+            if (hdg == 0) hdg = 360;
+            d.HdgText = hdg.ToString("D3");
+            int alt = (int)System.Math.Round(s.ApAltitudeLockVar);
+            d.AltText = alt > 0 ? alt.ToString("D5") : "-----";
+            int vs = (int)System.Math.Round(s.ApVerticalHoldVar);
+            d.VsActive = s.AutopilotVerticalHold;
+            if (s.AutopilotVerticalHold)
+            {
+               string sign = vs >= 0 ? "+" : "-";
+               d.VsText = sign + System.Math.Abs(vs).ToString("D4");
+            }
+            else d.VsText = "-----";
+         }
+         // else: leave defaults ("---", source="none") — UI hides the bar.
+
+         return d;
       }
 
    }

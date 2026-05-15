@@ -109,6 +109,30 @@ namespace MSFSFlightFollowing.Models
             // single bit; FBW reports AP1 / AP2 separately).
             public int A32nxAp1Active;
             public int A32nxAp2Active;
+
+            // ---- FCU display state (FBW A32NX / Headwind A330) ----
+            // Order MUST match SimConnectDataDefinitions.AircraftStatusVars.
+            public double FcuSpeedSelected;       // kts (or -1 in managed)
+            public double FcuMachSelected;        // mach (e.g. 0.82)
+            public int    FcuSpdManagedDot;
+            public int    FcuSpdManagedDashes;
+            public double FcuHeadingSelected;     // deg
+            public int    FcuHdgManagedDot;
+            public int    FcuHdgManagedDashes;
+            public int    FcuTrkFpaModeActive;    // when 1, HDG window shows TRK and V/S shows FPA
+            public double FcuAltitudeSelected;    // ft
+            public int    FcuAltManaged;
+            public double FcuVsSelected;          // fpm
+            public double FcuFpaSelected;         // deg
+
+            // Generic SimConnect AP target values — used as fallback for non-FBW airframes.
+            public double ApAirspeedHoldVar;      // kts
+            public double ApHeadingLockDir;       // deg
+            public double ApAltitudeLockVar;      // ft
+            public double ApVerticalHoldVar;      // fpm
+
+            // Altimeter QNH (Kohlsman) reading from the pilot-side altimeter, in hPa.
+            public double QnhMb;
         }
     }
 }
